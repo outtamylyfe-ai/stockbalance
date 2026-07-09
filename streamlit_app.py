@@ -1,3 +1,7 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+
 @st.cache_data(ttl=3600)  # Cache for performance, expires in 1 hour
 def process_uploaded_excel(uploaded_file):
     """
