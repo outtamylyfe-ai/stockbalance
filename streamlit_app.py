@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Polished CSS
+# Custom Polished CSS Style Treatments
 st.markdown("""
     <style>
     .main-title { font-size: 36px; font-weight: 700; color: #1E3A8A; margin-bottom: 5px; }
@@ -31,7 +31,7 @@ st.markdown('<div class="subtitle">Upload your branch inventory workbook to view
 # File Uploader
 uploaded_file = st.file_uploader("Choose your inventory Excel file (.xlsx)", type=["xlsx"])
 
-# Robust Data Cleaning Helpers to avoid double-counting subtotal rows
+# Robust Data Cleaning Helper
 def clean_numeric(series):
     return pd.to_numeric(series, errors='coerce').fillna(0)
 
@@ -60,169 +60,211 @@ if uploaded_file is not None:
         # ==========================================
         with tab1:
             st.markdown('<div class="section-header">CCK Tablet Inventory Analysis</div>', unsafe_allow_html=True)
-            df_t1 = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
-            df_t1.columns = df_t1.columns.str.strip()
+            df_t1_raw = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
+            df_t1_raw.columns = df_t1_raw.columns.str.strip()
             
-            if 'BLOCK' in df_t1.columns:
-                blocks_available = sorted(df_t1['BLOCK'].dropna().unique())
-                selected_blocks = st.multiselect("Filter by BLOCK:", options=blocks_available, default=[b for b in ['A', 'B', 'C'] if b in blocks_available])
+            if 'BLOCK' in df_t1_raw.columns:
+                # Filter out pre-existing total/summary rows to avoid double-counting
+                df_t1 = df_t1_raw[df_t1_raw['BLOCK'].notna() & (~df_t1_raw['BLOCK'].astype(str).str.upper().str.contains('TOTAL'))].copy()
                 
-                df_t1_filtered = df_t1[df_t1['BLOCK'].isin(selected_blocks)].copy()
+                # Perform clean numerical casts and row-by-row balance calculations
+                df_t1['TOTAL'] = clean_numeric(df_t1['TOTAL'])
+                df_t1['TOTAL SOLD'] = clean_numeric(df_t1['TOTAL SOLD'])
+                df_t1['BALANCE'] = clean_numeric(df_t1['BALANCE'])
+                df_t1['Value of Balance'] = df_t1['BALANCE'] * clean_numeric(df_t1['AVG PO PRICE'])
                 
-                if not df_t1_filtered.empty:
-                    df_t1_filtered['Balance Unit (%)'] = clean_numeric(df_t1_filtered['BALANCE %'])
-                    df_t1_filtered['Sold (%)'] = 1.0 - df_t1_filtered['Balance Unit (%)']
-                    df_t1_filtered['Number of Balance Units'] = clean_numeric(df_t1_filtered['BALANCE'])
-                    df_t1_filtered['Value of Balance'] = df_t1_filtered['Number of Balance Units'] * clean_numeric(df_t1_filtered['AVG PO PRICE'])
-                    
-                    # Dynamic Pivot
-                    pivot_t1 = df_t1_filtered.groupby('BLOCK').agg({
-                        'TOTAL': 'sum',
-                        'TOTAL SOLD': 'sum',
-                        'Number of Balance Units': 'sum',
-                        'Value of Balance': 'sum'
-                    }).reset_index()
-                    
-                    col1, col2 = st.columns([1, 1])
-                    with col1:
-                        st.subheader("Accurate Block Metrics")
-                        st.dataframe(pivot_t1.style.format({
-                            'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 
-                            'Number of Balance Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
-                        }), use_container_width=True)
-                    
-                    with col2:
-                        st.subheader("Visual Inventory Balance Ratio")
-                        fig_t1 = go.Figure()
-                        fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['TOTAL SOLD'], name='Units Sold', marker_color='#10B981'))
-                        fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['Number of Balance Units'], name='Balance Units', marker_color='#3B82F6'))
-                        fig_t1.update_layout(barmode='stack', height=300, margin=dict(t=20, b=20, l=20, r=20))
-                        st.plotly_chart(fig_t1, use_container_width=True)
-                    
-                    pdf_report_payload['CCK-TABLET'] = pivot_t1
-                else:
-                    st.warning("No data found for the active block criteria.")
+                # Aggregate safely across categories
+                pivot_t1 = df_t1.groupby('BLOCK').agg({
+                    'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
+                }).reset_index()
+                
+                # Dynamic percentage weighting
+                pivot_t1['Balance (%)'] = pivot_t1['BALANCE'] / pivot_t1['TOTAL']
+                pivot_t1['Sold (%)'] = pivot_t1['TOTAL SOLD'] / pivot_t1['TOTAL']
+                
+                # Append Grand Total Row
+                t1_total = pd.DataFrame([{
+                    'BLOCK': 'GRAND TOTAL',
+                    'TOTAL': pivot_t1['TOTAL'].sum(),
+                    'TOTAL SOLD': pivot_t1['TOTAL SOLD'].sum(),
+                    'BALANCE': pivot_t1['BALANCE'].sum(),
+                    'Value of Balance': pivot_t1['Value of Balance'].sum(),
+                    'Balance (%)': pivot_t1['BALANCE'].sum() / pivot_t1['TOTAL'].sum(),
+                    'Sold (%)': pivot_t1['TOTAL SOLD'].sum() / pivot_t1['TOTAL'].sum()
+                }])
+                
+                pivot_t1_final = pd.concat([pivot_t1, t1_total], ignore_index=True)[[
+                    'BLOCK', 'TOTAL', 'TOTAL SOLD', 'BALANCE', 'Balance (%)', 'Sold (%)', 'Value of Balance'
+                ]]
+                
+                st.dataframe(pivot_t1_final.style.format({
+                    'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 'BALANCE': '{:,.0f}',
+                    'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
+                }), use_container_width=True)
+                
+                pdf_report_payload['CCK-TABLET'] = pivot_t1_final
 
         # ==========================================
         # TAB 2: CCK-NICHE
         # ==========================================
         with tab2:
             st.markdown('<div class="section-header">CCK Niche Lot Type Breakdown</div>', unsafe_allow_html=True)
-            df_t2 = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
-            df_t2.columns = df_t2.columns.str.strip()
+            df_t2_raw = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
+            df_t2_raw.columns = df_t2_raw.columns.str.strip()
             
-            if 'LOT TYPE' in df_t2.columns:
-                df_t2['LOT TYPE CLEAN'] = df_t2['LOT TYPE'].astype(str).str.strip().str.upper()
+            if 'LOT TYPE' in df_t2_raw.columns:
+                check_col = 'BLOCK' if 'BLOCK' in df_t2_raw.columns else 'LOT TYPE'
+                df_t2 = df_t2_raw[df_t2_raw[check_col].notna() & (~df_t2_raw[check_col].astype(str).str.upper().str.contains('TOTAL'))].copy()
                 
-                def assign_niche_category(val):
-                    if val in ['SINGLE', 'DOUBLE', 'FAMILY']:
-                        return val
-                    return 'OTHERS'
-                
-                df_t2['Category'] = df_t2['LOT TYPE CLEAN'].apply(assign_niche_category)
                 df_t2['TOTAL'] = clean_numeric(df_t2['TOTAL'])
+                df_t2['TOTAL SOLD'] = clean_numeric(df_t2['TOTAL SOLD'])
                 df_t2['BALANCE'] = clean_numeric(df_t2['BALANCE'])
+                df_t2['Value of Balance'] = df_t2['BALANCE'] * clean_numeric(df_t2['AVG PO PRICE'])
                 
-                cat_summary = df_t2.groupby('Category').agg({
-                    'TOTAL': 'sum',
-                    'BALANCE': 'sum'
+                # Standardize strings to clean categories
+                df_t2['Category'] = df_t2['LOT TYPE'].astype(str).str.strip().str.upper().apply(
+                    lambda x: x if x in ['SINGLE', 'DOUBLE', 'FAMILY'] else 'OTHERS'
+                )
+                
+                pivot_t2 = df_t2.groupby('Category').agg({
+                    'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
                 }).reindex(['SINGLE', 'DOUBLE', 'FAMILY', 'OTHERS'], fill_value=0).reset_index()
                 
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    st.subheader("Niche Category Metrics Summary")
-                    st.dataframe(cat_summary.style.format({'TOTAL': '{:,.0f}', 'BALANCE': '{:,.0f}'}), use_container_width=True)
+                pivot_t2['Balance (%)'] = pivot_t2['BALANCE'] / pivot_t2['TOTAL']
+                pivot_t2['Sold (%)'] = pivot_t2['TOTAL SOLD'] / pivot_t2['TOTAL']
                 
-                with col2:
-                    st.subheader("Category Distribution Pie Chart")
-                    fig_t2 = px.pie(cat_summary, values='TOTAL', names='Category', color_discrete_sequence=px.colors.qualitative.Safe)
-                    fig_t2.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
-                    st.plotly_chart(fig_t2, use_container_width=True)
+                # Append Grand Total Row
+                t2_total = pd.DataFrame([{
+                    'Category': 'GRAND TOTAL',
+                    'TOTAL': pivot_t2['TOTAL'].sum(),
+                    'TOTAL SOLD': pivot_t2['TOTAL SOLD'].sum(),
+                    'BALANCE': pivot_t2['BALANCE'].sum(),
+                    'Value of Balance': pivot_t2['Value of Balance'].sum(),
+                    'Balance (%)': pivot_t2['BALANCE'].sum() / pivot_t2['TOTAL'].sum(),
+                    'Sold (%)': pivot_t2['TOTAL SOLD'].sum() / pivot_t2['TOTAL'].sum()
+                }])
                 
-                with st.expander("🔍 Deep-Dive Breakdown of the 'OTHERS' Bucket"):
-                    df_others = df_t2[df_t2['Category'] == 'OTHERS']
-                    if not df_others.empty:
-                        others_breakdown = df_others.groupby('LOT TYPE').agg({
-                            'TOTAL': 'sum',
-                            'BALANCE': 'sum'
-                        }).reset_index()
-                        st.dataframe(others_breakdown.style.format({'TOTAL': '{:,.0f}', 'BALANCE': '{:,.0f}'}), use_container_width=True)
-                        pdf_report_payload['CCK-NICHE-OTHERS'] = others_breakdown
+                pivot_t2_final = pd.concat([pivot_t2, t2_total], ignore_index=True)[[
+                    'Category', 'TOTAL', 'TOTAL SOLD', 'BALANCE', 'Balance (%)', 'Sold (%)', 'Value of Balance'
+                ]]
                 
-                pdf_report_payload['CCK-NICHE-MAIN'] = cat_summary
+                st.dataframe(pivot_t2_final.style.format({
+                    'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 'BALANCE': '{:,.0f}',
+                    'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
+                }), use_container_width=True)
+                
+                pdf_report_payload['CCK-NICHE'] = pivot_t2_final
 
         # ==========================================
-        # TAB 3: LST-TABLE & NICHE (Dynamic Function-Based Filtering)
+        # TAB 3: LST-TABLE & NICHE (Dynamic Multi-Filtering Function)
         # ==========================================
         with tab3:
             st.markdown('<div class="section-header">LST Tablet and Niche Deep Dive</div>', unsafe_allow_html=True)
-            df_t3 = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
-            df_t3.columns = df_t3.columns.str.strip()
+            df_t3_raw = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
+            df_t3_raw.columns = df_t3_raw.columns.str.strip()
             
-            if 'PRODUCT' in df_t3.columns and 'LOT TYPE' in df_t3.columns:
-                # Isolate dynamic filter configurations from the unique items available in the dataset
-                available_products = sorted(df_t3['PRODUCT'].dropna().unique())
-                available_lot_types = sorted(df_t3['LOT TYPE'].dropna().unique())
+            if 'PRODUCT' in df_t3_raw.columns:
+                # Strip out inner totals
+                df_t3 = df_t3_raw[df_t3_raw['PRODUCT'].notna() & (~df_t3_raw['PRODUCT'].astype(str).str.upper().str.contains('TOTAL'))].copy()
                 
-                # Interactive Filter Selectors
+                df_t3['TOTAL'] = clean_numeric(df_t3['TOTAL'])
+                df_t3['TOTAL SOLD'] = clean_numeric(df_t3['TOTAL SOLD'])
+                df_t3['BALANCE'] = clean_numeric(df_t3['BALANCE'])
+                df_t3['Value of Balance'] = df_t3['BALANCE'] * clean_numeric(df_t3['AVG PO PRICE'])
+                
+                available_products = sorted(df_t3['PRODUCT'].dropna().unique())
+                available_lots = sorted(df_t3['LOT TYPE'].dropna().unique()) if 'LOT TYPE' in df_t3.columns else []
+                
+                # Function UI controls
                 f_col1, f_col2 = st.columns(2)
                 with f_col1:
-                    selected_products = st.multiselect("Filter Category (Column A):", options=available_products, default=available_products)
+                    selected_products = st.multiselect("Filter LST Category (Column A):", options=available_products, default=available_products)
                 with f_col2:
-                    selected_lots = st.multiselect("Filter Lot Type (Column D):", options=available_lot_types, default=available_lot_types)
+                    selected_lots = st.multiselect("Filter LST Lot Type (Column D):", options=available_lots, default=available_lots) if available_lots else []
                 
-                # Apply multi-column filtering rules seamlessly without modifying the raw structure
-                df_t3_filtered = df_t3[
-                    (df_t3['PRODUCT'].isin(selected_products)) & 
-                    (df_t3['LOT TYPE'].isin(selected_lots))
-                ].copy()
+                # Check criteria masking rules
+                mask = df_t3['PRODUCT'].isin(selected_products)
+                if available_lots and selected_lots:
+                    mask = mask & df_t3['LOT TYPE'].isin(selected_lots)
+                    
+                df_t3_filtered = df_t3[mask].copy()
                 
                 if not df_t3_filtered.empty:
-                    df_t3_filtered['Balance (%)'] = clean_numeric(df_t3_filtered['BALANCE %'])
-                    df_t3_filtered['Sold (%)'] = 1.0 - df_t3_filtered['Balance (%)']
-                    df_t3_filtered['Number of Units'] = clean_numeric(df_t3_filtered['BALANCE'])
-                    df_t3_filtered['Value of Balance'] = df_t3_filtered['Number of Units'] * clean_numeric(df_t3_filtered['AVG PO PRICE'])
+                    group_cols = ['PRODUCT', 'LOT TYPE'] if 'LOT TYPE' in df_t3.columns else ['PRODUCT']
+                    pivot_t3 = df_t3_filtered.groupby(group_cols).agg({
+                        'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
+                    }).reset_index()
                     
-                    st.subheader("Dynamic Filtered Matrix Output")
-                    st.dataframe(df_t3_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Number of Units', 'Value of Balance']].style.format({
-                        'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Number of Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
+                    pivot_t3['Balance (%)'] = pivot_t3['BALANCE'] / pivot_t3['TOTAL']
+                    pivot_t3['Sold (%)'] = pivot_t3['TOTAL SOLD'] / pivot_t3['TOTAL']
+                    
+                    # Append Grand Total Row
+                    t3_total_data = {
+                        'PRODUCT': 'GRAND TOTAL',
+                        'TOTAL': pivot_t3['TOTAL'].sum(),
+                        'TOTAL SOLD': pivot_t3['TOTAL SOLD'].sum(),
+                        'BALANCE': pivot_t3['BALANCE'].sum(),
+                        'Value of Balance': pivot_t3['Value of Balance'].sum(),
+                        'Balance (%)': pivot_t3['BALANCE'].sum() / pivot_t3['TOTAL'].sum(),
+                        'Sold (%)': pivot_t3['TOTAL SOLD'].sum() / pivot_t3['TOTAL'].sum()
+                    }
+                    if 'LOT TYPE' in df_t3.columns:
+                        t3_total_data['LOT TYPE'] = '-'
+                        
+                    t3_total = pd.DataFrame([t3_total_data])
+                    pivot_t3_final = pd.concat([pivot_t3, t3_total], ignore_index=True)
+                    
+                    st.dataframe(pivot_t3_final.style.format({
+                        'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 'BALANCE': '{:,.0f}',
+                        'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
                     }), use_container_width=True)
                     
-                    pdf_report_payload['LST-FILTERED'] = df_t3_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'BALANCE', 'Value of Balance']]
+                    pdf_report_payload['LST-SUMMARY'] = pivot_t3_final
                 else:
-                    st.warning("No rows match the specified filtering function combinations.")
+                    st.warning("No rows match current filter functions.")
 
         # ==========================================
         # TAB 4: TLT-TABLE & NICHE
         # ==========================================
         with tab4:
             st.markdown('<div class="section-header">TLT Tablet & Niche Snapshot</div>', unsafe_allow_html=True)
-            df_tlt = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
-            df_tlt.columns = df_tlt.columns.str.strip()
+            df_t4_raw = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
+            df_t4_raw.columns = df_t4_raw.columns.str.strip()
             
-            if 'PRODUCT' in df_tlt.columns:
-                df_tlt_filtered = df_tlt[df_tlt['PRODUCT'].isin(['TABLET', 'NICHE'])].copy()
+            if 'PRODUCT' in df_t4_raw.columns:
+                df_t4 = df_t4_raw[df_t4_raw['PRODUCT'].notna() & (~df_t4_raw['PRODUCT'].astype(str).str.upper().str.contains('TOTAL'))].copy()
                 
-                if not df_tlt_filtered.empty:
-                    df_tlt_filtered['Balance (%)'] = clean_numeric(df_tlt_filtered['BALANCE %'])
-                    df_tlt_filtered['Sold (%)'] = 1.0 - df_tlt_filtered['Balance (%)']
-                    df_tlt_filtered['Value of Balance'] = clean_numeric(df_tlt_filtered['BALANCE']) * clean_numeric(df_tlt_filtered['AVG PO PRICE'])
-                    
-                    tot_units = clean_numeric(df_tlt_filtered['BALANCE']).sum()
-                    tot_val = df_tlt_filtered['Value of Balance'].sum()
-                    
-                    m1, m2 = st.columns(2)
-                    with m1:
-                        st.metric("Total Balance Units", f"{tot_units:,.0f}")
-                    with m2:
-                        st.metric("Total Value of Balance", f"${tot_val:,.2f}")
-                    
-                    st.subheader("Data Summary Matrix")
-                    st.dataframe(df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Value of Balance']].style.format({
-                        'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
-                    }), use_container_width=True)
-                    
-                    pdf_report_payload['TLT-SUMMARY'] = df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'BALANCE', 'Value of Balance']]
+                df_t4['TOTAL'] = clean_numeric(df_t4['TOTAL'])
+                df_t4['TOTAL SOLD'] = clean_numeric(df_t4['TOTAL SOLD'])
+                df_t4['BALANCE'] = clean_numeric(df_t4['BALANCE'])
+                df_t4['Value of Balance'] = df_t4['BALANCE'] * clean_numeric(df_t4['AVG PO PRICE'])
+                
+                pivot_t4 = df_t4.groupby('PRODUCT').agg({
+                    'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
+                }).reset_index()
+                
+                pivot_t4['Balance (%)'] = pivot_t4['BALANCE'] / pivot_t4['TOTAL']
+                pivot_t4['Sold (%)'] = pivot_t4['TOTAL SOLD'] / pivot_t4['TOTAL']
+                
+                # Append Grand Total Row
+                t4_total = pd.DataFrame([{
+                    'PRODUCT': 'GRAND TOTAL',
+                    'TOTAL': pivot_t4['TOTAL'].sum(),
+                    'TOTAL SOLD': pivot_t4['TOTAL SOLD'].sum(),
+                    'BALANCE': pivot_t4['BALANCE'].sum(),
+                    'Value of Balance': pivot_t4['Value of Balance'].sum(),
+                    'Balance (%)': pivot_t4['BALANCE'].sum() / pivot_t4['TOTAL'].sum(),
+                    'Sold (%)': pivot_t4['TOTAL SOLD'].sum() / pivot_t4['TOTAL'].sum()
+                }])
+                
+                pivot_t4_final = pd.concat([pivot_t4, t4_total], ignore_index=True)
+                
+                st.dataframe(pivot_t4_final.style.format({
+                    'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 'BALANCE': '{:,.0f}',
+                    'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
+                }), use_container_width=True)
+                
+                pdf_report_payload['TLT-SUMMARY'] = pivot_t4_final
 
         # ==========================================
         # PDF EXPORT GENERATOR
