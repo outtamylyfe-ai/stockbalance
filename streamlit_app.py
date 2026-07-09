@@ -13,7 +13,7 @@ st.title("📊 Branch Sales & Inventory Analytics")
 st.markdown("---")
 
 # ==========================================
-# 🛠️ EXACT CELL/ROW DATA PROCESSING PIPELINE
+# 🛠️ DATA PROCESSING PIPELINE
 # ==========================================
 @st.cache_data(ttl=3600)
 def process_uploaded_excel(uploaded_file):
@@ -66,15 +66,13 @@ def process_uploaded_excel(uploaded_file):
     # 1. CCK BRANCH PARSING
     # ==========================================
     if 'CCK-TABLET' in xls.sheet_names:
-        # Load raw sheet without custom header tracking to lock 1-based index numbers matching Excel layout
         df_cck_tab_raw = pd.read_excel(xls, sheet_name='CCK-TABLET', header=None)
         
         # Assign columns from Row index 1
-        cols = df_cck_tab_raw.iloc[1].str.strip().tolist()
+        cols = df_cck_tab_raw.iloc[1].astype(str).str.strip().tolist()
         df_cck_tab_raw.columns = cols
         
-        # Row slices map directly to Excel row numbers translated to 0-based Python indices
-        blk_a_rows = list(range(2, 9))   # Excel rows 3 to 9 (includes all inner data components)
+        blk_a_rows = list(range(2, 9))   # Excel rows 3 to 9 
         blk_b_rows = list(range(10, 14)) # Excel rows 11 to 14
         blk_c_rows = list(range(15, 21)) # Excel rows 16 to 21
         
@@ -89,10 +87,9 @@ def process_uploaded_excel(uploaded_file):
 
     if 'CCK-NICHE' in xls.sheet_names:
         df_cck_niche = pd.read_excel(xls, sheet_name='CCK-NICHE', header=1)
-        df_cck_niche.columns = df_cck_niche.columns.str.strip()
+        df_cck_niche.columns = df_cck_niche.columns.astype(str).str.strip()
         
-        # Drop summary footer/subtotal rows 
-        df_niche_clean = df_cck_niche[df_cck_niche['LOT TYPE'].notna() & (~df_cck_niche['BLOCK'].str.contains('TOTAL|TOTAL:', na=False, case=False))].copy()
+        df_niche_clean = df_cck_niche[df_cck_niche['LOT TYPE'].notna() & (~df_cck_niche['BLOCK'].astype(str).str.contains('TOTAL|TOTAL:', na=False, case=False))].copy()
         
         df_niche_clean['TOTAL_num'] = pd.to_numeric(df_niche_clean['TOTAL'], errors='coerce').fillna(0)
         df_niche_clean['SOLD_num'] = pd.to_numeric(df_niche_clean['TOTAL SOLD'], errors='coerce').fillna(0)
@@ -117,29 +114,41 @@ def process_uploaded_excel(uploaded_file):
         processed_data['CCK_Niche'] = format_summary_matrix(niche_aggs)
 
     # ==========================================
-    # 2. LST & TLT BRANCHES PARSING (With Dynasty/Imperial isolation)
+    # 2. LST & TLT BRANCHES PARSING
     # ==========================================
     for sheet_name, save_key in [('LST-TABLE & NICHE', 'LST'), ('TLT-TABLE & NICHE', 'TLT')]:
         if sheet_name in xls.sheet_names:
-            df_branch = pd.read_excel(xls, sheet_name=sheet_name, header=1)
-            df_branch.columns = df_branch.columns.str.strip()
+            # Load raw sheet dynamically to inspect header columns safely
+            df_branch_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             
-            # Forward fill product context since rows under primary product header are left blank
-            df_branch['PRODUCT_filled'] = df_branch['PRODUCT'].ffill().str.strip().upper()
+            # Row 1 typically contains column headers
+            cols = df_branch_raw.iloc[1].fillna('').astype(str).str.strip().tolist()
             
+            # Robust Check: Find which column contains the keyword 'PRODUCT' or fallback to the first column
+            prod_col_name = next((c for c in cols if 'PRODUCT' in c.upper()), None)
+            if not prod_col_name and len(cols) > 0:
+                prod_col_name = cols[0] # Fallback to first structural column
+            
+            # Now format columns correctly
+            df_branch_raw.columns = cols
+            df_branch = df_branch_raw.iloc[2:].copy() # Sift out data frame elements
+            
+            # Forward fill product context dynamically
+            df_branch['PRODUCT_filled'] = df_branch[prod_col_name].ffill().fillna('').astype(str).str.strip().upper()
+            
+            # Convert standard layout columns
             df_branch['TOTAL_num'] = pd.to_numeric(df_branch['TOTAL'], errors='coerce').fillna(0)
             df_branch['SOLD_num'] = pd.to_numeric(df_branch['TOTAL SOLD'], errors='coerce').fillna(0)
             df_branch['BALANCE_num'] = pd.to_numeric(df_branch['BALANCE'], errors='coerce').fillna(0)
             df_branch['AVG_PO_num'] = pd.to_numeric(df_branch['AVG PO PRICE'], errors='coerce').fillna(0)
             df_branch['Value'] = df_branch['BALANCE_num'] * df_branch['AVG_PO_num']
             
-            # Custom classification router tracking Suite names matching user requests
             def classify_lst_tlt_rows(row):
                 prod = str(row['PRODUCT_filled']).upper()
-                suite = str(row['SUITE NO.']).strip().upper()
-                lot = str(row['LOT TYPE']).strip().upper()
+                suite = str(row.get('SUITE NO.', '')).strip().upper()
+                lot = str(row.get('LOT TYPE', '')).strip().upper()
                 
-                if 'TOTAL' in prod:
+                if 'TOTAL' in prod or 'ALL PRODUCT' in prod:
                     return None
                     
                 if 'TABLET' in prod:
