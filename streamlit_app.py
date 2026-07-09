@@ -118,25 +118,26 @@ def process_uploaded_excel(uploaded_file):
     # ==========================================
     for sheet_name, save_key in [('LST-TABLE & NICHE', 'LST'), ('TLT-TABLE & NICHE', 'TLT')]:
         if sheet_name in xls.sheet_names:
-            # Load raw sheet dynamically to inspect header columns safely
             df_branch_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             
-            # Row 1 typically contains column headers
+            # Row 1 contains headers
             cols = df_branch_raw.iloc[1].fillna('').astype(str).str.strip().tolist()
             
-            # Robust Check: Find which column contains the keyword 'PRODUCT' or fallback to the first column
             prod_col_name = next((c for c in cols if 'PRODUCT' in c.upper()), None)
             if not prod_col_name and len(cols) > 0:
-                prod_col_name = cols[0] # Fallback to first structural column
+                prod_col_name = cols[0]
             
-            # Now format columns correctly
             df_branch_raw.columns = cols
-            df_branch = df_branch_raw.iloc[2:].copy() # Sift out data frame elements
+            df_branch = df_branch_raw.iloc[2:].copy()
             
+            # Force conversion to series via squeeze to protect against pandas metadata attribute loss
+            prod_series = df_branch[prod_col_name].squeeze()
+            if isinstance(prod_series, pd.DataFrame):
+                prod_series = prod_series.iloc[:, 0]
+                
             # Forward fill product context dynamically
-            df_branch['PRODUCT_filled'] = df_branch[prod_col_name].ffill().fillna('').astype(str).str.strip().upper()
+            df_branch['PRODUCT_filled'] = prod_series.ffill().fillna('').astype(str).str.strip().upper()
             
-            # Convert standard layout columns
             df_branch['TOTAL_num'] = pd.to_numeric(df_branch['TOTAL'], errors='coerce').fillna(0)
             df_branch['SOLD_num'] = pd.to_numeric(df_branch['TOTAL SOLD'], errors='coerce').fillna(0)
             df_branch['BALANCE_num'] = pd.to_numeric(df_branch['BALANCE'], errors='coerce').fillna(0)
