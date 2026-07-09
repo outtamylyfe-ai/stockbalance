@@ -2,6 +2,20 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+# Page Configuration
+st.set_page_config(
+    page_title="Dynamic Branch Sales & Inventory Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
+
+st.title("📊 Dynamic Branch Sales & Inventory Analytics")
+st.markdown("Upload your structural reporting Excel spreadsheet to automatically parse, process, and populate your metrics.")
+st.markdown("---")
+
+# ==========================================
+# 🛠️ AUTOMATED DATA PROCESSING FUNCTION
+# ==========================================
 @st.cache_data(ttl=3600)  # Cache for performance, expires in 1 hour
 def process_uploaded_excel(uploaded_file):
     """
@@ -126,3 +140,53 @@ def process_uploaded_excel(uploaded_file):
         )
         
     return processed_data
+
+# ==========================================
+# 📥 USER INTERFACE: FILE UPLOADER
+# ==========================================
+uploaded_file = st.sidebar.file_uploader(
+    "Step 1: Upload Reporting Document", 
+    type=["xlsx", "xls"],
+    help="Upload your master tracking spreadsheet to autopopulate the views."
+)
+
+if uploaded_file is not None:
+    # Trigger dynamic extraction pipeline
+    with st.spinner("Analyzing spreadsheet structure and calculating summaries..."):
+        data_package = process_uploaded_excel(uploaded_file)
+    st.sidebar.success("🎉 Data parsed successfully!")
+    
+    # Navigation Radio
+    page = st.sidebar.radio("Step 2: Choose View:", [
+        "CCK-NICHE Overview", 
+        "LST Inventory Analytics", 
+        "TLT Inventory Analytics"
+    ])
+    
+    # Render selected views using processed packages
+    if page == "CCK-NICHE Overview" and 'cck_niche_blocks' in data_package:
+        st.header("CCK-NICHE Comprehensive Overview")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("🏢 Niche Block Performance")
+            st.dataframe(data_package['cck_niche_blocks'], use_container_width=True, hide_index=True)
+        with col2:
+            st.subheader("📐 Unit Matrix Breakdown")
+            st.dataframe(data_package['cck_niche_matrix'], use_container_width=True)
+            
+    elif page == "LST Inventory Analytics" and 'lst_tablet' in data_package:
+        st.header("LST Branch Inventory Matrix")
+        st.subheader("📱 Tablet Matrix Breakdowns")
+        st.dataframe(data_package['lst_tablet'], use_container_width=True)
+        st.subheader("🏺 Niche Lot Form Factor Breakdowns")
+        st.dataframe(data_package['lst_niche'], use_container_width=True)
+        
+    elif page == "TLT Inventory Analytics" and 'tlt_tablet' in data_package:
+        st.header("TLT Branch Inventory Performance")
+        st.subheader("📱 Tablet Overview Segment")
+        st.dataframe(data_package['tlt_tablet'], use_container_width=True)
+        st.subheader("🏺 Niche Form Factor Metrics")
+        st.dataframe(data_package['tlt_niche'], use_container_width=True)
+else:
+    # Fallback view when no sheet is provided yet
+    st.info("💡 Please upload an Excel document via the sidebar menu to instantly auto-populate the reporting dashboard dashboards.")
