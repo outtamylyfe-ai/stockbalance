@@ -136,7 +136,8 @@ def process_uploaded_excel(uploaded_file):
                 prod_series = prod_series.iloc[:, 0]
                 
             # Forward fill product context dynamically
-            df_branch['PRODUCT_filled'] = prod_series.ffill().fillna('').astype(str).str.strip().upper()
+            # Force each element to a string, then fill empty values, then clean
+            df_branch['PRODUCT_filled'] = prod_series.fillna('').apply(str).str.strip().str.upper()
             
             df_branch['TOTAL_num'] = pd.to_numeric(df_branch['TOTAL'], errors='coerce').fillna(0)
             df_branch['SOLD_num'] = pd.to_numeric(df_branch['TOTAL SOLD'], errors='coerce').fillna(0)
