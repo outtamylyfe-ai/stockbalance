@@ -35,22 +35,6 @@ uploaded_file = st.file_uploader("Choose your inventory Excel file (.xlsx)", typ
 def clean_numeric(series):
     return pd.to_numeric(series, errors='coerce').fillna(0)
 
-def filter_out_subtotals(df, check_column):
-    """Filters out built-in Excel Subtotal, Total, and Footnote rows dynamically."""
-    if check_column not in df.columns:
-        return df
-    
-    # Drop rows where checking column is null or contains 'total', 'sub total', or lengthy footnotes
-    mask = df[check_column].astype(str).str.upper().str.strip()
-    filtered_df = df[
-        df[check_column].notna() & 
-        (~mask.str.contains('TOTAL')) & 
-        (~mask.str.contains('SUB TOTAL')) & 
-        (~mask.str.contains('STATUS:')) & 
-        (mask.str.len() < 50) # Drop long descriptive sentences
-    ].copy()
-    return filtered_df
-
 if uploaded_file is not None:
     try:
         # Load sheets (header starts on row 2 / index 1)
@@ -76,66 +60,60 @@ if uploaded_file is not None:
         # ==========================================
         with tab1:
             st.markdown('<div class="section-header">CCK Tablet Inventory Analysis</div>', unsafe_allow_html=True)
-            df_raw1 = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
-            df_raw1.columns = df_raw1.columns.str.strip()
+            df_t1 = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
+            df_t1.columns = df_t1.columns.str.strip()
             
-            # Clean and isolate core rows
-            df_t1 = filter_out_subtotals(df_raw1, 'BLOCK')
-            
-            blocks_available = sorted(df_t1['BLOCK'].unique())
-            selected_blocks = st.multiselect("Filter by BLOCK:", options=blocks_available, default=[b for b in ['A', 'B', 'C'] if b in blocks_available])
-            
-            df_t1_filtered = df_t1[df_t1['BLOCK'].isin(selected_blocks)].copy()
-            
-            if not df_t1_filtered.empty:
-                # Direct assignments based on requirement criteria
-                df_t1_filtered['Balance Unit (%)'] = clean_numeric(df_t1_filtered['BALANCE %'])
-                df_t1_filtered['Sold (%)'] = 1.0 - df_t1_filtered['Balance Unit (%)']
-                df_t1_filtered['Number of Balance Units'] = clean_numeric(df_t1_filtered['BALANCE'])
-                df_t1_filtered['Value of Balance'] = df_t1_filtered['Number of Balance Units'] * clean_numeric(df_t1_filtered['AVG PO PRICE'])
+            if 'BLOCK' in df_t1.columns:
+                blocks_available = sorted(df_t1['BLOCK'].dropna().unique())
+                selected_blocks = st.multiselect("Filter by BLOCK:", options=blocks_available, default=[b for b in ['A', 'B', 'C'] if b in blocks_available])
                 
-                # Dynamic Pivot
-                pivot_t1 = df_t1_filtered.groupby('BLOCK').agg({
-                    'TOTAL': 'sum',
-                    'TOTAL SOLD': 'sum',
-                    'Number of Balance Units': 'sum',
-                    'Value of Balance': 'sum'
-                }).reset_index()
+                df_t1_filtered = df_t1[df_t1['BLOCK'].isin(selected_blocks)].copy()
                 
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    st.subheader("Accurate Block Metrics")
-                    st.dataframe(pivot_t1.style.format({
-                        'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 
-                        'Number of Balance Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
-                    }), use_container_width=True)
-                
-                with col2:
-                    st.subheader("Visual Inventory Balance Ratio")
-                    fig_t1 = go.Figure()
-                    fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['TOTAL SOLD'], name='Units Sold', marker_color='#10B981'))
-                    fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['Number of Balance Units'], name='Balance Units', marker_color='#3B82F6'))
-                    fig_t1.update_layout(barmode='stack', height=300, margin=dict(t=20, b=20, l=20, r=20))
-                    st.plotly_chart(fig_t1, use_container_width=True)
-                
-                pdf_report_payload['CCK-TABLET'] = pivot_t1
-            else:
-                st.warning("No data found for the active block criteria.")
+                if not df_t1_filtered.empty:
+                    df_t1_filtered['Balance Unit (%)'] = clean_numeric(df_t1_filtered['BALANCE %'])
+                    df_t1_filtered['Sold (%)'] = 1.0 - df_t1_filtered['Balance Unit (%)']
+                    df_t1_filtered['Number of Balance Units'] = clean_numeric(df_t1_filtered['BALANCE'])
+                    df_t1_filtered['Value of Balance'] = df_t1_filtered['Number of Balance Units'] * clean_numeric(df_t1_filtered['AVG PO PRICE'])
+                    
+                    # Dynamic Pivot
+                    pivot_t1 = df_t1_filtered.groupby('BLOCK').agg({
+                        'TOTAL': 'sum',
+                        'TOTAL SOLD': 'sum',
+                        'Number of Balance Units': 'sum',
+                        'Value of Balance': 'sum'
+                    }).reset_index()
+                    
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        st.subheader("Accurate Block Metrics")
+                        st.dataframe(pivot_t1.style.format({
+                            'TOTAL': '{:,.0f}', 'TOTAL SOLD': '{:,.0f}', 
+                            'Number of Balance Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
+                        }), use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("Visual Inventory Balance Ratio")
+                        fig_t1 = go.Figure()
+                        fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['TOTAL SOLD'], name='Units Sold', marker_color='#10B981'))
+                        fig_t1.add_trace(go.Bar(x=pivot_t1['BLOCK'], y=pivot_t1['Number of Balance Units'], name='Balance Units', marker_color='#3B82F6'))
+                        fig_t1.update_layout(barmode='stack', height=300, margin=dict(t=20, b=20, l=20, r=20))
+                        st.plotly_chart(fig_t1, use_container_width=True)
+                    
+                    pdf_report_payload['CCK-TABLET'] = pivot_t1
+                else:
+                    st.warning("No data found for the active block criteria.")
 
         # ==========================================
         # TAB 2: CCK-NICHE
         # ==========================================
         with tab2:
             st.markdown('<div class="section-header">CCK Niche Lot Type Breakdown</div>', unsafe_allow_html=True)
-            df_raw2 = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
-            df_raw2.columns = df_raw2.columns.str.strip()
-            
-            df_t2 = filter_out_subtotals(df_raw2, 'BLOCK')
+            df_t2 = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
+            df_t2.columns = df_t2.columns.str.strip()
             
             if 'LOT TYPE' in df_t2.columns:
                 df_t2['LOT TYPE CLEAN'] = df_t2['LOT TYPE'].astype(str).str.strip().str.upper()
                 
-                # Interchangeable mapping logic + Categorization
                 def assign_niche_category(val):
                     if val in ['SINGLE', 'DOUBLE', 'FAMILY']:
                         return val
@@ -174,92 +152,77 @@ if uploaded_file is not None:
                 pdf_report_payload['CCK-NICHE-MAIN'] = cat_summary
 
         # ==========================================
-        # TAB 3: LST-TABLE & NICHE
+        # TAB 3: LST-TABLE & NICHE (Dynamic Function-Based Filtering)
         # ==========================================
         with tab3:
             st.markdown('<div class="section-header">LST Tablet and Niche Deep Dive</div>', unsafe_allow_html=True)
-            df_raw3 = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
-            df_raw3.columns = df_raw3.columns.str.strip()
+            df_t3 = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
+            df_t3.columns = df_t3.columns.str.strip()
             
-            df_t3 = filter_out_subtotals(df_raw3, 'PRODUCT')
-            df_t3['PRODUCT_CLEAN'] = df_t3['PRODUCT'].astype(str).str.strip().str.upper()
-            
-            # Section A: Tablet
-            st.subheader("🔹 Section A: Tablet Analysis (Dynasty 2 & Imperial 2)")
-            df_lst_tab = df_t3[df_t3['PRODUCT_CLEAN'] == 'TABLET'].copy()
-            if 'SUITE NO.' in df_lst_tab.columns:
-                df_lst_tab['SUITE_CLEAN'] = df_lst_tab['SUITE NO.'].astype(str).str.strip().str.upper()
-                df_lst_tab_filtered = df_lst_tab[df_lst_tab['SUITE_CLEAN'].isin(['DYNASTY 2', 'IMPERIAL 2'])].copy()
+            if 'PRODUCT' in df_t3.columns and 'LOT TYPE' in df_t3.columns:
+                # Isolate dynamic filter configurations from the unique items available in the dataset
+                available_products = sorted(df_t3['PRODUCT'].dropna().unique())
+                available_lot_types = sorted(df_t3['LOT TYPE'].dropna().unique())
                 
-                if not df_lst_tab_filtered.empty:
-                    df_lst_tab_filtered['Balance (%)'] = clean_numeric(df_lst_tab_filtered['BALANCE %'])
-                    df_lst_tab_filtered['Sold (%)'] = 1.0 - df_lst_tab_filtered['Balance (%)']
-                    df_lst_tab_filtered['Number of Units'] = clean_numeric(df_lst_tab_filtered['BALANCE'])
-                    df_lst_tab_filtered['Value of Balance'] = df_lst_tab_filtered['Number of Units'] * clean_numeric(df_lst_tab_filtered['AVG PO PRICE'])
+                # Interactive Filter Selectors
+                f_col1, f_col2 = st.columns(2)
+                with f_col1:
+                    selected_products = st.multiselect("Filter Category (Column A):", options=available_products, default=available_products)
+                with f_col2:
+                    selected_lots = st.multiselect("Filter Lot Type (Column D):", options=available_lot_types, default=available_lot_types)
+                
+                # Apply multi-column filtering rules seamlessly without modifying the raw structure
+                df_t3_filtered = df_t3[
+                    (df_t3['PRODUCT'].isin(selected_products)) & 
+                    (df_t3['LOT TYPE'].isin(selected_lots))
+                ].copy()
+                
+                if not df_t3_filtered.empty:
+                    df_t3_filtered['Balance (%)'] = clean_numeric(df_t3_filtered['BALANCE %'])
+                    df_t3_filtered['Sold (%)'] = 1.0 - df_t3_filtered['Balance (%)']
+                    df_t3_filtered['Number of Units'] = clean_numeric(df_t3_filtered['BALANCE'])
+                    df_t3_filtered['Value of Balance'] = df_t3_filtered['Number of Units'] * clean_numeric(df_t3_filtered['AVG PO PRICE'])
                     
-                    st.dataframe(df_lst_tab_filtered[['SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Number of Units', 'Value of Balance']].style.format({
+                    st.subheader("Dynamic Filtered Matrix Output")
+                    st.dataframe(df_t3_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Number of Units', 'Value of Balance']].style.format({
                         'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Number of Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
                     }), use_container_width=True)
-                    pdf_report_payload['LST-TABLET'] = df_lst_tab_filtered[['SUITE NO.', 'LOT TYPE', 'BALANCE', 'Value of Balance']]
+                    
+                    pdf_report_payload['LST-FILTERED'] = df_t3_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'BALANCE', 'Value of Balance']]
                 else:
-                    st.info("No matching data rows found for Dynasty 2 or Imperial 2 Tablet lines.")
-
-            # Section B: Niche
-            st.write("---")
-            st.subheader("🔹 Section B: Niche Analysis")
-            df_lst_niche = df_t3[df_t3['PRODUCT_CLEAN'] == 'NICHE'].copy()
-            
-            if not df_lst_niche.empty:
-                lot_types_lst = sorted(df_lst_niche['LOT TYPE'].dropna().unique())
-                selected_lots_lst = st.multiselect("Filter Niche Lot Types:", options=lot_types_lst, default=lot_types_lst)
-                
-                df_lst_niche_filtered = df_lst_niche[df_lst_niche['LOT TYPE'].isin(selected_lots_lst)].copy()
-                if not df_lst_niche_filtered.empty:
-                    df_lst_niche_filtered['Balance (%)'] = clean_numeric(df_lst_niche_filtered['BALANCE %'])
-                    df_lst_niche_filtered['Sold (%)'] = 1.0 - df_lst_niche_filtered['Balance (%)']
-                    df_lst_niche_filtered['Number of Units'] = clean_numeric(df_lst_niche_filtered['BALANCE'])
-                    df_lst_niche_filtered['Value of Balance'] = df_lst_niche_filtered['Number of Units'] * clean_numeric(df_lst_niche_filtered['AVG PO PRICE'])
-                    
-                    st.dataframe(df_lst_niche_filtered[['SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Number of Units', 'Value of Balance']].style.format({
-                        'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Number of Units': '{:,.0f}', 'Value of Balance': '${:,.2f}'
-                    }), use_container_width=True)
-                    pdf_report_payload['LST-NICHE'] = df_lst_niche_filtered[['SUITE NO.', 'LOT TYPE', 'BALANCE', 'Value of Balance']]
+                    st.warning("No rows match the specified filtering function combinations.")
 
         # ==========================================
         # TAB 4: TLT-TABLE & NICHE
         # ==========================================
         with tab4:
             st.markdown('<div class="section-header">TLT Tablet & Niche Snapshot</div>', unsafe_allow_html=True)
-            df_raw4 = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
-            df_raw4.columns = df_raw4.columns.str.strip()
+            df_tlt = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
+            df_tlt.columns = df_tlt.columns.str.strip()
             
-            df_tlt = filter_out_subtotals(df_raw4, 'PRODUCT')
-            df_tlt['PRODUCT_CLEAN'] = df_tlt['PRODUCT'].astype(str).str.strip().str.upper()
-            
-            # Filter solely for TABLET and NICHE rows
-            df_tlt_filtered = df_tlt[df_tlt['PRODUCT_CLEAN'].isin(['TABLET', 'NICHE'])].copy()
-            
-            if not df_tlt_filtered.empty:
-                df_tlt_filtered['Balance (%)'] = clean_numeric(df_tlt_filtered['BALANCE %'])
-                df_tlt_filtered['Sold (%)'] = 1.0 - df_tlt_filtered['Balance (%)']
-                df_tlt_filtered['Value of Balance'] = clean_numeric(df_tlt_filtered['BALANCE']) * clean_numeric(df_tlt_filtered['AVG PO PRICE'])
+            if 'PRODUCT' in df_tlt.columns:
+                df_tlt_filtered = df_tlt[df_tlt['PRODUCT'].isin(['TABLET', 'NICHE'])].copy()
                 
-                # Accurate Metric Cards
-                tot_units = clean_numeric(df_tlt_filtered['BALANCE']).sum()
-                tot_val = df_tlt_filtered['Value of Balance'].sum()
-                
-                m1, m2 = st.columns(2)
-                with m1:
-                    st.metric("Total Balance Units", f"{tot_units:,.0f}")
-                with m2:
-                    st.metric("Total Value of Balance", f"${tot_val:,.2f}")
-                
-                st.subheader("Data Summary Matrix")
-                st.dataframe(df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Value of Balance']].style.format({
-                    'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
-                }), use_container_width=True)
-                
-                pdf_report_payload['TLT-SUMMARY'] = df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'BALANCE', 'Value of Balance']]
+                if not df_tlt_filtered.empty:
+                    df_tlt_filtered['Balance (%)'] = clean_numeric(df_tlt_filtered['BALANCE %'])
+                    df_tlt_filtered['Sold (%)'] = 1.0 - df_tlt_filtered['Balance (%)']
+                    df_tlt_filtered['Value of Balance'] = clean_numeric(df_tlt_filtered['BALANCE']) * clean_numeric(df_tlt_filtered['AVG PO PRICE'])
+                    
+                    tot_units = clean_numeric(df_tlt_filtered['BALANCE']).sum()
+                    tot_val = df_tlt_filtered['Value of Balance'].sum()
+                    
+                    m1, m2 = st.columns(2)
+                    with m1:
+                        st.metric("Total Balance Units", f"{tot_units:,.0f}")
+                    with m2:
+                        st.metric("Total Value of Balance", f"${tot_val:,.2f}")
+                    
+                    st.subheader("Data Summary Matrix")
+                    st.dataframe(df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'LOT TYPE', 'Balance (%)', 'Sold (%)', 'Value of Balance']].style.format({
+                        'Balance (%)': '{:.2%}', 'Sold (%)': '{:.2%}', 'Value of Balance': '${:,.2f}'
+                    }), use_container_width=True)
+                    
+                    pdf_report_payload['TLT-SUMMARY'] = df_tlt_filtered[['PRODUCT', 'SUITE NO.', 'BALANCE', 'Value of Balance']]
 
         # ==========================================
         # PDF EXPORT GENERATOR
@@ -282,7 +245,6 @@ if uploaded_file is not None:
             for section_name, dataframe in summary_dict.items():
                 story.append(Paragraph(f"📝 Section: {section_name}", h1_style))
                 
-                # Format long floating values for readability in standard lists
                 formatted_df = dataframe.copy()
                 for col in formatted_df.columns:
                     if formatted_df[col].dtype == 'float64':
