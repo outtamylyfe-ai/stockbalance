@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import io
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
@@ -16,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Polished CSS Style Treatments
+# Custom Style Treatments
 st.markdown("""
     <style>
     .main-title { font-size: 36px; font-weight: 700; color: #1E3A8A; margin-bottom: 5px; }
@@ -28,24 +26,14 @@ st.markdown("""
 st.markdown('<div class="main-title">Inventory Analytics Dashboard</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Upload your branch inventory workbook to view dynamically cleaned metrics, summaries, and automated PDF export profiles.</div>', unsafe_allow_html=True)
 
-# File Uploader
 uploaded_file = st.file_uploader("Choose your inventory Excel file (.xlsx)", type=["xlsx"])
 
-# Robust Data Cleaning Helper
-def clean_numeric(series):
-    return pd.to_numeric(series, errors='coerce').fillna(0)
+def clean_numeric(val):
+    return pd.to_numeric(val, errors='coerce')
 
 if uploaded_file is not None:
     try:
-        # Load sheets (header starts on row 2 / index 1)
         xls = pd.ExcelFile(uploaded_file)
-        required_sheets = ['CCK-TABLET', 'CCK-NICHE', 'LST-TABLE & NICHE', 'TLT-TABLE & NICHE']
-        
-        if not all(s in xls.sheet_names for s in required_sheets):
-            st.error(f"Missing Sheets! The uploaded workbook must contain exactly: {required_sheets}")
-            st.stop()
-            
-        # Global dictionary tracking precise outputs for PDF report generation
         pdf_report_payload = {}
 
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -56,235 +44,147 @@ if uploaded_file is not None:
         ])
 
         # ==========================================
-        # TAB 1: CCK-TABLET (Exact Image Match Layout)
+        # TAB 1: CCK-TABLET (Exact Formula Target)
         # ==========================================
         with tab1:
             st.markdown('<div class="section-header">CCK Tablet Summary Matrix</div>', unsafe_allow_html=True)
-            df_t1_raw = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
-            df_t1_raw.columns = df_t1_raw.columns.str.strip()
+            df = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
+            df.columns = df.columns.str.strip()
             
-            if 'BLOCK' in df_t1_raw.columns:
-                # Filter out any built-in Excel subtotal/total rows
-                df_t1 = df_t1_raw[df_t1_raw['BLOCK'].notna() & (~df_t1_raw['BLOCK'].astype(str).str.upper().str.contains('TOTAL'))].copy()
+            # Extract precise subtotal rows directly from Excel formulas
+            subtotals = df[df['BLOCK'].astype(str).str.upper().str.contains('SUB TOTAL')].copy()
+            grand_total = df[df['BLOCK'].astype(str).str.upper() == 'TABLET TOTAL:'].copy()
+            
+            rows_list = []
+            for _, r in subtotals.iterrows():
+                label = "Blk " + str(r['BLOCK']).split(' ')[1]  # Extracts 'A', 'B', 'C'
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r['Value of Balance units'])
+                rows_list.append({
+                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                # Numeric conversions
-                df_t1['TOTAL'] = clean_numeric(df_t1['TOTAL'])
-                df_t1['TOTAL SOLD'] = clean_numeric(df_t1['TOTAL SOLD'])
-                df_t1['BALANCE'] = clean_numeric(df_t1['BALANCE'])
-                df_t1['Value of Balance'] = df_t1['BALANCE'] * clean_numeric(df_t1['AVG PO PRICE'])
+            for _, r in grand_total.iterrows():
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r['Value of Balance units'])
+                rows_list.append({
+                    ' ': 'Total', 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                # Grouping by Block (A, B, C)
-                pivot_t1 = df_t1.groupby('BLOCK').agg({
-                    'TOTAL': 'sum', 
-                    'TOTAL SOLD': 'sum', 
-                    'BALANCE': 'sum', 
-                    'Value of Balance': 'sum'
-                }).reset_index()
-                
-                # Match percentage layout
-                pivot_t1['Sold'] = pivot_t1['TOTAL SOLD'] / pivot_t1['TOTAL']
-                pivot_t1['Balance'] = pivot_t1['BALANCE'] / pivot_t1['TOTAL']
-                
-                # Match row naming: "Blk A", "Blk B", etc.
-                pivot_t1['BLOCK'] = pivot_t1['BLOCK'].apply(lambda x: f"Blk {x}" if not str(x).startswith("Blk") else x)
-                
-                # Calculate the precise "Total" row metrics
-                total_sum = pivot_t1['TOTAL'].sum()
-                sold_sum = pivot_t1['TOTAL SOLD'].sum()
-                bal_sum = pivot_t1['BALANCE'].sum()
-                
-                total_row = pd.DataFrame([{
-                    'BLOCK': 'Total',
-                    'Sold': sold_sum / total_sum if total_sum > 0 else 0,
-                    'Balance': bal_sum / total_sum if total_sum > 0 else 0,
-                    'BALANCE': bal_sum,
-                    'Value of Balance': pivot_t1['Value of Balance'].sum()
-                }])
-                
-                # Format exactly: Block Column, Sold, Balance, Balance unit, Value of balance
-                pivot_t1_final = pd.concat([pivot_t1, total_row], ignore_index=True)
-                pivot_t1_final = pivot_t1_final.rename(columns={
-                    'BLOCK': ' ',  
-                    'BALANCE': 'Balance unit',
-                    'Value of Balance': 'Value of balance'
-                })[[' ', 'Sold', 'Balance', 'Balance unit', 'Value of balance']]
-                
-                st.dataframe(pivot_t1_final.style.format({
-                    'Sold': '{:.2%}', 
-                    'Balance': '{:.2%}', 
-                    'Balance unit': '{:,.0f}', 
-                    'Value of balance': '$  {:,.2f}'
-                }), use_container_width=True)
-                
-                pdf_report_payload['CCK-TABLET'] = pivot_t1_final
+            pivot_t1_final = pd.DataFrame(rows_list)
+            st.dataframe(pivot_t1_final.style.format({
+                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
+            }), use_container_width=True)
+            pdf_report_payload['CCK-TABLET'] = pivot_t1_final
 
         # ==========================================
         # TAB 2: CCK-NICHE
         # ==========================================
         with tab2:
-            st.markdown('<div class="section-header">CCK Niche Lot Type Breakdown</div>', unsafe_allow_html=True)
-            df_t2_raw = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
-            df_t2_raw.columns = df_t2_raw.columns.str.strip()
+            st.markdown('<div class="section-header">CCK Niche Summary Matrix</div>', unsafe_allow_html=True)
+            df = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
+            df.columns = df.columns.str.strip()
             
-            if 'LOT TYPE' in df_t2_raw.columns:
-                check_col = 'BLOCK' if 'BLOCK' in df_t2_raw.columns else 'LOT TYPE'
-                df_t2 = df_t2_raw[df_t2_raw[check_col].notna() & (~df_t2_raw[check_col].astype(str).str.upper().str.contains('TOTAL'))].copy()
+            subtotals = df[df['BLOCK'].astype(str).str.upper().str.contains('SUB TOTAL')].copy()
+            grand_total = df[df['BLOCK'].astype(str).str.upper() == 'NICHE TOTAL:'].copy()
+            
+            rows_list = []
+            for _, r in subtotals.iterrows():
+                label = "Blk " + str(r['BLOCK']).split(' ')[1]
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r['Value of Balance'])
+                rows_list.append({
+                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                df_t2['TOTAL'] = clean_numeric(df_t2['TOTAL'])
-                df_t2['TOTAL SOLD'] = clean_numeric(df_t2['TOTAL SOLD'])
-                df_t2['BALANCE'] = clean_numeric(df_t2['BALANCE'])
-                df_t2['Value of Balance'] = df_t2['BALANCE'] * clean_numeric(df_t2['AVG PO PRICE'])
+            for _, r in grand_total.iterrows():
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r['Value of Balance'])
+                rows_list.append({
+                    ' ': 'Total', 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                df_t2['Category'] = df_t2['LOT TYPE'].astype(str).str.strip().str.upper().apply(
-                    lambda x: x if x in ['SINGLE', 'DOUBLE', 'FAMILY'] else 'OTHERS'
-                )
-                
-                pivot_t2 = df_t2.groupby('Category').agg({
-                    'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
-                }).reindex(['SINGLE', 'DOUBLE', 'FAMILY', 'OTHERS'], fill_value=0).reset_index()
-                
-                pivot_t2['Sold'] = pivot_t2['TOTAL SOLD'] / pivot_t2['TOTAL']
-                pivot_t2['Balance'] = pivot_t2['BALANCE'] / pivot_t2['TOTAL']
-                
-                t2_total = pd.DataFrame([{
-                    'Category': 'Total',
-                    'TOTAL': pivot_t2['TOTAL'].sum(),
-                    'TOTAL SOLD': pivot_t2['TOTAL SOLD'].sum(),
-                    'BALANCE': pivot_t2['BALANCE'].sum(),
-                    'Value of Balance': pivot_t2['Value of Balance'].sum(),
-                    'Sold': pivot_t2['TOTAL SOLD'].sum() / pivot_t2['TOTAL'].sum(),
-                    'Balance': pivot_t2['BALANCE'].sum() / pivot_t2['TOTAL'].sum()
-                }])
-                
-                pivot_t2_final = pd.concat([pivot_t2, t2_total], ignore_index=True)
-                pivot_t2_final = pivot_t2_final.rename(columns={
-                    'Category': ' ',
-                    'BALANCE': 'Balance unit',
-                    'Value of Balance': 'Value of balance'
-                })[[' ', 'Sold', 'Balance', 'Balance unit', 'Value of balance']]
-                
-                st.dataframe(pivot_t2_final.style.format({
-                    'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-                }), use_container_width=True)
-                
-                pdf_report_payload['CCK-NICHE'] = pivot_t2_final
+            pivot_t2_final = pd.DataFrame(rows_list)
+            st.dataframe(pivot_t2_final.style.format({
+                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
+            }), use_container_width=True)
+            pdf_report_payload['CCK-NICHE'] = pivot_t2_final
 
         # ==========================================
-        # TAB 3: LST-TABLE & NICHE (Dynamic Multi-Filtering Function)
+        # TAB 3: LST-TABLE & NICHE
         # ==========================================
         with tab3:
-            st.markdown('<div class="section-header">LST Tablet and Niche Deep Dive</div>', unsafe_allow_html=True)
-            df_t3_raw = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
-            df_t3_raw.columns = df_t3_raw.columns.str.strip()
+            st.markdown('<div class="section-header">LST Tablet and Niche Summary Matrix</div>', unsafe_allow_html=True)
+            df = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
+            df.columns = df.columns.str.strip()
             
-            if 'PRODUCT' in df_t3_raw.columns:
-                df_t3 = df_t3_raw[df_t3_raw['PRODUCT'].notna() & (~df_t3_raw['PRODUCT'].astype(str).str.upper().str.contains('TOTAL'))].copy()
+            targets = ['TABLET TOTAL:', 'NICHE TOTAL:', 'ALL PRODUCT TOTAL:']
+            filtered_rows = df[df['PRODUCT'].astype(str).str.upper().isin(targets)].copy()
+            
+            rows_list = []
+            for _, r in filtered_rows.iterrows():
+                p_label = str(r['PRODUCT']).replace('TOTAL:', '').strip().title()
+                label = "Total" if "All Product" in p_label else p_label
                 
-                df_t3['TOTAL'] = clean_numeric(df_t3['TOTAL'])
-                df_t3['TOTAL SOLD'] = clean_numeric(df_t3['TOTAL SOLD'])
-                df_t3['BALANCE'] = clean_numeric(df_t3['BALANCE'])
-                df_t3['Value of Balance'] = df_t3['BALANCE'] * clean_numeric(df_t3['AVG PO PRICE'])
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r["BALANCE $ '000 (PO)"]) * 1000  # Convert to full currency value
                 
-                available_products = sorted(df_t3['PRODUCT'].dropna().unique())
-                available_lots = sorted(df_t3['LOT TYPE'].dropna().unique()) if 'LOT TYPE' in df_t3.columns else []
+                rows_list.append({
+                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                f_col1, f_col2 = st.columns(2)
-                with f_col1:
-                    selected_products = st.multiselect("Filter LST Category (Column A):", options=available_products, default=available_products)
-                with f_col2:
-                    selected_lots = st.multiselect("Filter LST Lot Type (Column D):", options=available_lots, default=available_lots) if available_lots else []
-                
-                mask = df_t3['PRODUCT'].isin(selected_products)
-                if available_lots and selected_lots:
-                    mask = mask & df_t3['LOT TYPE'].isin(selected_lots)
-                    
-                df_t3_filtered = df_t3[mask].copy()
-                
-                if not df_t3_filtered.empty:
-                    group_cols = ['PRODUCT', 'LOT TYPE'] if 'LOT TYPE' in df_t3.columns else ['PRODUCT']
-                    pivot_t3 = df_t3_filtered.groupby(group_cols).agg({
-                        'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
-                    }).reset_index()
-                    
-                    pivot_t3['Sold'] = pivot_t3['TOTAL SOLD'] / pivot_t3['TOTAL']
-                    pivot_t3['Balance'] = pivot_t3['BALANCE'] / pivot_t3['TOTAL']
-                    
-                    # Generate Combined String Label row context (Product - Type)
-                    if 'LOT TYPE' in pivot_t3.columns:
-                        pivot_t3[' '] = pivot_t3['PRODUCT'].astype(str) + " - " + pivot_t3['LOT TYPE'].astype(str)
-                    else:
-                        pivot_t3[' '] = pivot_t3['PRODUCT']
-                    
-                    t3_total_data = {
-                        ' ': 'Total',
-                        'TOTAL': pivot_t3['TOTAL'].sum(),
-                        'TOTAL SOLD': pivot_t3['TOTAL SOLD'].sum(),
-                        'BALANCE': pivot_t3['BALANCE'].sum(),
-                        'Value of Balance': pivot_t3['Value of Balance'].sum(),
-                        'Sold': pivot_t3['TOTAL SOLD'].sum() / pivot_t3['TOTAL'].sum(),
-                        'Balance': pivot_t3['BALANCE'].sum() / pivot_t3['TOTAL'].sum()
-                    }
-                        
-                    t3_total = pd.DataFrame([t3_total_data])
-                    pivot_t3_final = pd.concat([pivot_t3, t3_total], ignore_index=True)
-                    pivot_t3_final = pivot_t3_final.rename(columns={
-                        'BALANCE': 'Balance unit',
-                        'Value of Balance': 'Value of balance'
-                    })[[' ', 'Sold', 'Balance', 'Balance unit', 'Value of balance']]
-                    
-                    st.dataframe(pivot_t3_final.style.format({
-                        'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-                    }), use_container_width=True)
-                    
-                    pdf_report_payload['LST-SUMMARY'] = pivot_t3_final
-                else:
-                    st.warning("No rows match current filter functions.")
+            pivot_t3_final = pd.DataFrame(rows_list)
+            st.dataframe(pivot_t3_final.style.format({
+                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
+            }), use_container_width=True)
+            pdf_report_payload['LST-SUMMARY'] = pivot_t3_final
 
         # ==========================================
         # TAB 4: TLT-TABLE & NICHE
         # ==========================================
         with tab4:
-            st.markdown('<div class="section-header">TLT Tablet & Niche Snapshot</div>', unsafe_allow_html=True)
-            df_t4_raw = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
-            df_t4_raw.columns = df_t4_raw.columns.str.strip()
+            st.markdown('<div class="section-header">TLT Tablet & Niche Summary Matrix</div>', unsafe_allow_html=True)
+            df = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
+            df.columns = df.columns.str.strip()
             
-            if 'PRODUCT' in df_t4_raw.columns:
-                df_t4 = df_t4_raw[df_t4_raw['PRODUCT'].notna() & (~df_t4_raw['PRODUCT'].astype(str).str.upper().str.contains('TOTAL'))].copy()
+            targets = ['TABLET TOTAL:', 'NICHE TOTAL:', 'ALL PRODUCT TOTAL:']
+            filtered_rows = df[df['PRODUCT'].astype(str).str.upper().isin(targets)].copy()
+            
+            rows_list = []
+            for _, r in filtered_rows.iterrows():
+                p_label = str(r['PRODUCT']).replace('TOTAL:', '').strip().title()
+                label = "Total" if "All Product" in p_label else p_label
                 
-                df_t4['TOTAL'] = clean_numeric(df_t4['TOTAL'])
-                df_t4['TOTAL SOLD'] = clean_numeric(df_t4['TOTAL SOLD'])
-                df_t4['BALANCE'] = clean_numeric(df_t4['BALANCE'])
-                df_t4['Value of Balance'] = df_t4['BALANCE'] * clean_numeric(df_t4['AVG PO PRICE'])
+                tot = clean_numeric(r['TOTAL'])
+                sold = clean_numeric(r['TOTAL SOLD'])
+                bal = clean_numeric(r['BALANCE'])
+                val_bal = clean_numeric(r["BALANCE $ '000 (PO)"]) * 1000  # Convert to full currency value
                 
-                pivot_t4 = df_t4.groupby('PRODUCT').agg({
-                    'TOTAL': 'sum', 'TOTAL SOLD': 'sum', 'BALANCE': 'sum', 'Value of Balance': 'sum'
-                }).reset_index()
+                rows_list.append({
+                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
+                    'Balance unit': bal, 'Value of balance': val_bal
+                })
                 
-                pivot_t4['Sold'] = pivot_t4['TOTAL SOLD'] / pivot_t4['TOTAL']
-                pivot_t4['Balance'] = pivot_t4['BALANCE'] / pivot_t4['TOTAL']
-                
-                t4_total = pd.DataFrame([{
-                    'PRODUCT': 'Total',
-                    'TOTAL': pivot_t4['TOTAL'].sum(),
-                    'TOTAL SOLD': pivot_t4['TOTAL SOLD'].sum(),
-                    'BALANCE': pivot_t4['BALANCE'].sum(),
-                    'Value of Balance': pivot_t4['Value of Balance'].sum(),
-                    'Sold': pivot_t4['TOTAL SOLD'].sum() / pivot_t4['TOTAL'].sum(),
-                    'Balance': pivot_t4['BALANCE'].sum() / pivot_t4['TOTAL'].sum()
-                }])
-                
-                pivot_t4_final = pd.concat([pivot_t4, t4_total], ignore_index=True)
-                pivot_t4_final = pivot_t4_final.rename(columns={
-                    'PRODUCT': ' ',
-                    'BALANCE': 'Balance unit',
-                    'Value of Balance': 'Value of balance'
-                })[[' ', 'Sold', 'Balance', 'Balance unit', 'Value of balance']]
-                
-                st.dataframe(pivot_t4_final.style.format({
-                    'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-                }), use_container_width=True)
-                
-                pdf_report_payload['TLT-SUMMARY'] = pivot_t4_final
+            pivot_t4_final = pd.DataFrame(rows_list)
+            st.dataframe(pivot_t4_final.style.format({
+                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
+            }), use_container_width=True)
+            pdf_report_payload['TLT-SUMMARY'] = pivot_t4_final
 
         # ==========================================
         # PDF EXPORT GENERATOR
@@ -309,8 +209,12 @@ if uploaded_file is not None:
                 
                 formatted_df = dataframe.copy()
                 for col in formatted_df.columns:
-                    if formatted_df[col].dtype == 'float64':
-                        formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.2f}" if x > 100 else f"{x:.2%}")
+                    if col in ['Sold', 'Balance']:
+                        formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2%}")
+                    elif col == 'Balance unit':
+                        formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.0f}")
+                    elif col == 'Value of balance':
+                        formatted_df[col] = formatted_df[col].apply(lambda x: f"${x:,.2f}")
                 
                 raw_data = [formatted_df.columns.tolist()] + formatted_df.astype(str).values.tolist()
                 
