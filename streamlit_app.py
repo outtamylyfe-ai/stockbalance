@@ -1,280 +1,181 @@
 import streamlit as st
 import pandas as pd
-import io
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import numpy as np
 
 # Page Configuration
 st.set_page_config(
-    page_title="Inventory Analytics Dashboard",
+    page_title="Dynamic Branch Sales & Inventory Dashboard",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom Style Treatments
-st.markdown("""
-    <style>
-    .main-title { font-size: 36px; font-weight: 700; color: #1E3A8A; margin-bottom: 5px; }
-    .subtitle { font-size: 15px; color: #4B5563; margin-bottom: 25px; }
-    .section-header { font-size: 20px; font-weight: 600; color: #1F2937; margin-top: 15px; margin-bottom: 15px; border-bottom: 2px solid #E5E7EB; padding-bottom: 5px; }
-    </style>
-""", unsafe_allow_html=True)
+st.title("📊 Dynamic Branch Sales & Inventory Analytics")
+st.markdown("Upload your structural reporting Excel spreadsheet to automatically parse, process, and populate your metrics.")
+st.markdown("---")
 
-st.markdown('<div class="main-title">Inventory Analytics Dashboard</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Upload your branch inventory workbook to view dynamically cleaned metrics, summaries, and automated PDF export profiles.</div>', unsafe_allow_html=True)
-
-uploaded_file = st.file_uploader("Choose your inventory Excel file (.xlsx)", type=["xlsx"])
-
-def clean_numeric(val):
-    return pd.to_numeric(val, errors='coerce')
-
-def find_balance_value_column(columns):
-    """Dynamically finds the currency value column to prevent KeyErrors."""
-    cols_upper = [str(c).upper() for c in columns]
+# ==========================================
+# 🛠️ AUTOMATED DATA PROCESSING FUNCTION
+# ==========================================
+@st.cache_data(ttl=3600)  # Cache for performance, expires in 1 hour
+def process_uploaded_excel(uploaded_file):
+    """
+    Parses an uploaded Excel business spreadsheet dynamically, 
+    extracting key reporting views across different branch sheets.
+    """
+    xls = pd.ExcelFile(uploaded_file)
+    processed_data = {}
     
-    # Strategy 1: Look for columns containing both 'VALUE' and 'BALANCE'
-    for c in columns:
-        if 'VALUE' in str(c).upper() and 'BALANCE' in str(c).upper():
-            return c
+    # 1. Process CCK-NICHE View
+    if 'CCK-NICHE' in xls.sheet_names:
+        df_niche = pd.read_excel(xls, sheet_name='CCK-NICHE', header=1)
+        df_niche.columns = df_niche.columns.str.strip()
+        
+        # Block Summary Segment
+        blocks_to_find = ['BLK A NICHE SUB TOTAL:', 'BLK B NICHE SUB TOTAL:', 'BLK C NICHE SUB TOTAL:']
+        df_blocks = df_niche[df_niche['BLOCK'].isin(blocks_to_find)].copy()
+        block_map = {
+            'BLK A NICHE SUB TOTAL:': 'Blk A',
+            'BLK B NICHE SUB TOTAL:': 'Blk B',
+            'BLK C NICHE SUB TOTAL:': 'Blk C'
+        }
+        df_blocks['Block Unit Name'] = df_blocks['BLOCK'].map(block_map)
+        
+        summary_blocks = pd.DataFrame({
+            'Block Unit Name': df_blocks['Block Unit Name'],
+            'Sold (%)': (df_blocks['TOTAL SOLD'] / df_blocks['TOTAL']).map('{:.2%}'.format),
+            'Balance (%)': (df_blocks['BALANCE'] / df_blocks['TOTAL']).map('{:.2%}'.format),
+            'Balance Units': df_blocks['BALANCE'].astype(int),
+            'Value of Balance': df_blocks['Value of Balance'].map('$  {:,.2f}'.format)
+        })
+        
+        # Appending Global Totals
+        total_row = pd.DataFrame([{
+            'Block Unit Name': 'Total Summary',
+            'Sold (%)': '{:.2%}'.format(df_blocks['TOTAL SOLD'].sum() / df_blocks['TOTAL'].sum()),
+            'Balance (%)': '{:.2%}'.format(df_blocks['BALANCE'].sum() / df_blocks['TOTAL'].sum()),
+            'Balance Units': int(df_blocks['BALANCE'].sum()),
+            'Value of Balance': '$  {:,.2f}'.format(df_blocks['Value of Balance'].sum())
+        }])
+        processed_data['cck_niche_blocks'] = pd.concat([summary_blocks, total_row], ignore_index=True)
+        
+        # Matrix Form Breakdown
+        df_clean_niche = df_niche[
+            df_niche['LOT TYPE'].notna() & 
+            (~df_niche['BLOCK'].str.contains('TOTAL|TOTAL:', na=False, case=False))
+        ].copy()
+        
+        def categorize_lot_type(row):
+            lot = str(row['LOT TYPE']).strip().upper()
+            if 'SINGLE' in lot or 'SG' in lot: return 'Single'
+            elif 'DOUBLE' in lot or 'DB' in lot: return 'Double'
+            elif 'FAMILY' in lot: return 'Family'
+            elif 'BUDDHA' in lot: return 'Buddha'
+            elif 'TOWER' in lot: return 'Tower'
+            else: return 'Special'
             
-    # Strategy 2: Fallback to columns containing 'BALANCE $'
-    for c in columns:
-        if 'BALANCE $' in str(c).upper():
-            return c
+        df_clean_niche['Category'] = df_clean_niche.apply(categorize_lot_type, axis=1)
+        matrix_aggs = df_clean_niche.groupby('Category').agg(
+            Total=('TOTAL', 'sum'), Balance=('BALANCE', 'sum'),
+            Sold=('TOTAL SOLD', 'sum'), Value_of_B=('Value of Balance', 'sum')
+        ).reindex(['Single', 'Double', 'Family', 'Buddha', 'Tower', 'Special']).fillna(0)
+        
+        matrix_final = matrix_aggs.T
+        matrix_final.loc['Balance(%)'] = (matrix_final.loc['Balance'] / matrix_final.loc['Total']).map('{:.2%}'.format)
+        matrix_final.loc['Sold(%)'] = (matrix_final.loc['Sold'] / matrix_final.loc['Total']).map('{:.2%}'.format)
+        
+        for col in matrix_final.columns:
+            matrix_final.at['Total', col] = f"{int(matrix_final.at['Total', col]):,}"
+            matrix_final.at['Balance', col] = f"{int(matrix_final.at['Balance', col]):,}"
+            matrix_final.at['Sold', col] = f"{int(matrix_final.at['Sold', col]):,}"
+            matrix_final.at['Value of Balance', col] = f"$ {matrix_final.at['Value_of_B', col]:,.2f}"
             
-    return None
+        processed_data['cck_niche_matrix'] = matrix_final.drop(index='Value_of_B')
+
+    # 2. Process LST Inventory View
+    if 'LST-TABLE & NICHE' in xls.sheet_names:
+        df_lst = pd.read_excel(xls, sheet_name='LST-TABLE & NICHE', header=1)
+        df_lst.columns = df_lst.columns.str.strip()
+        
+        processed_data['lst_tablet'] = df_lst[df_lst['PRODUCT'] == 'TABLET'].groupby('SUITE NO.').agg(
+            Total=('TOTAL', 'sum'), Balance=('BALANCE', 'sum'), Sold=('TOTAL SOLD', 'sum'),
+            Value=('BALANCE $ \'000 (PO)', lambda x: x.sum() * 1000)
+        )
+        processed_data['lst_niche'] = df_lst[df_lst['PRODUCT'] == 'NICHE'].groupby('LOT TYPE').agg(
+            Total=('TOTAL', 'sum'), Balance=('BALANCE', 'sum'), Sold=('TOTAL SOLD', 'sum'),
+            Value=('BALANCE $ \'000 (PO)', lambda x: x.sum() * 1000)
+        )
+
+    # 3. Process TLT Inventory View
+    if 'TLT-TABLE & NICHE' in xls.sheet_names:
+        df_tlt = pd.read_excel(xls, sheet_name='TLT-TABLE & NICHE', header=1)
+        df_tlt.columns = df_tlt.columns.str.strip()
+        
+        processed_data['tlt_tablet'] = df_tlt[df_tlt['PRODUCT'] == 'TABLET'].groupby('SUITE NO.').agg(
+            Total=('TOTAL', 'sum'), Balance=('BALANCE', 'sum'), Sold=('TOTAL SOLD', 'sum'),
+            Value=('BALANCE $ \'000 (PO)', lambda x: x.sum() * 1000)
+        )
+        processed_data['tlt_niche'] = df_tlt[df_tlt['PRODUCT'] == 'NICHE'].groupby('LOT TYPE').agg(
+            Total=('TOTAL', 'sum'), Balance=('BALANCE', 'sum'), Sold=('TOTAL SOLD', 'sum'),
+            Value=('BALANCE $ \'000 (PO)', lambda x: x.sum() * 1000)
+        )
+        
+    return processed_data
+
+# ==========================================
+# 📥 USER INTERFACE: FILE UPLOADER
+# ==========================================
+uploaded_file = st.sidebar.file_uploader(
+    "Step 1: Upload Reporting Document", 
+    type=["xlsx", "xls"],
+    help="Upload your master tracking spreadsheet to autopopulate the views."
+)
 
 if uploaded_file is not None:
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-        pdf_report_payload = {}
-
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 CCK Tablet", 
-            "🪦 CCK Niche", 
-            "🏛️ LST Tablet & Niche", 
-            "🌅 TLT Tablet & Niche"
-        ])
-
-        # ==========================================
-        # TAB 1: CCK-TABLET
-        # ==========================================
-        with tab1:
-            st.markdown('<div class="section-header">CCK Tablet Summary Matrix</div>', unsafe_allow_html=True)
-            df = pd.read_excel(uploaded_file, sheet_name='CCK-TABLET', header=1)
-            df.columns = df.columns.str.strip()
+    # Trigger dynamic extraction pipeline
+    with st.spinner("Analyzing spreadsheet structure and calculating summaries..."):
+        data_package = process_uploaded_excel(uploaded_file)
+    st.sidebar.success("🎉 Data parsed successfully!")
+    
+    # Navigation Radio
+    page = st.sidebar.radio("Step 2: Choose View:", [
+        "CCK-NICHE Overview", 
+        "LST Inventory Analytics", 
+        "TLT Inventory Analytics"
+    ])
+    
+    # Render selected views using processed packages
+    if page == "CCK-NICHE Overview" and 'cck_niche_blocks' in data_package:
+        st.header("CCK-NICHE Comprehensive Overview")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("🏢 Niche Block Performance")
+            st.dataframe(data_package['cck_niche_blocks'], use_container_width=True, hide_index=True)
+        with col2:
+            st.subheader("📐 Unit Matrix Breakdown")
+            st.dataframe(data_package['cck_niche_matrix'], use_container_width=True)
             
-            val_col = find_balance_value_column(df.columns)
-            
-            # Filter down safely to the summary rows generated by Excel formulas
-            subtotals = df[df['BLOCK'].astype(str).str.upper().str.contains('SUB TOTAL')].copy()
-            grand_total = df[df['BLOCK'].astype(str).str.upper() == 'TABLET TOTAL:'].copy()
-            
-            rows_list = []
-            for _, r in subtotals.iterrows():
-                label = "Blk " + str(r['BLOCK']).split(' ')[1]
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                val_bal = clean_numeric(r[val_col]) if val_col else 0
-                rows_list.append({
-                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            for _, r in grand_total.iterrows():
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                val_bal = clean_numeric(r[val_col]) if val_col else 0
-                rows_list.append({
-                    ' ': 'Total', 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            pivot_t1_final = pd.DataFrame(rows_list)
-            st.dataframe(pivot_t1_final.style.format({
-                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-            }), use_container_width=True)
-            pdf_report_payload['CCK-TABLET'] = pivot_t1_final
-
-        # ==========================================
-        # TAB 2: CCK-NICHE
-        # ==========================================
-        with tab2:
-            st.markdown('<div class="section-header">CCK Niche Summary Matrix</div>', unsafe_allow_html=True)
-            df = pd.read_excel(uploaded_file, sheet_name='CCK-NICHE', header=1)
-            df.columns = df.columns.str.strip()
-            
-            val_col = find_balance_value_column(df.columns)
-            
-            subtotals = df[df['BLOCK'].astype(str).str.upper().str.contains('SUB TOTAL')].copy()
-            grand_total = df[df['BLOCK'].astype(str).str.upper() == 'NICHE TOTAL:'].copy()
-            
-            rows_list = []
-            for _, r in subtotals.iterrows():
-                label = "Blk " + str(r['BLOCK']).split(' ')[1]
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                val_bal = clean_numeric(r[val_col]) if val_col else 0
-                rows_list.append({
-                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            for _, r in grand_total.iterrows():
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                val_bal = clean_numeric(r[val_col]) if val_col else 0
-                rows_list.append({
-                    ' ': 'Total', 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            pivot_t2_final = pd.DataFrame(rows_list)
-            st.dataframe(pivot_t2_final.style.format({
-                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-            }), use_container_width=True)
-            pdf_report_payload['CCK-NICHE'] = pivot_t2_final
-
-        # ==========================================
-        # TAB 3: LST-TABLE & NICHE
-        # ==========================================
-        with tab3:
-            st.markdown('<div class="section-header">LST Tablet and Niche Summary Matrix</div>', unsafe_allow_html=True)
-            df = pd.read_excel(uploaded_file, sheet_name='LST-TABLE & NICHE', header=1)
-            df.columns = df.columns.str.strip()
-            
-            val_col = find_balance_value_column(df.columns)
-            
-            targets = ['TABLET TOTAL:', 'NICHE TOTAL:', 'ALL PRODUCT TOTAL:']
-            filtered_rows = df[df['PRODUCT'].astype(str).str.upper().isin(targets)].copy()
-            
-            rows_list = []
-            for _, r in filtered_rows.iterrows():
-                p_label = str(r['PRODUCT']).replace('TOTAL:', '').strip().title()
-                label = "Total" if "All Product" in p_label else p_label
-                
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                
-                # Check if scale is in '000s
-                raw_val = clean_numeric(r[val_col]) if val_col else 0
-                val_bal = raw_val * 1000 if (val_col and "'000" in str(val_col)) else raw_val
-                
-                rows_list.append({
-                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            pivot_t3_final = pd.DataFrame(rows_list)
-            st.dataframe(pivot_t3_final.style.format({
-                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-            }), use_container_width=True)
-            pdf_report_payload['LST-SUMMARY'] = pivot_t3_final
-
-        # ==========================================
-        # TAB 4: TLT-TABLE & NICHE
-        # ==========================================
-        with tab4:
-            st.markdown('<div class="section-header">TLT Tablet & Niche Summary Matrix</div>', unsafe_allow_html=True)
-            df = pd.read_excel(uploaded_file, sheet_name='TLT-TABLE & NICHE', header=1)
-            df.columns = df.columns.str.strip()
-            
-            val_col = find_balance_value_column(df.columns)
-            
-            targets = ['TABLET TOTAL:', 'NICHE TOTAL:', 'ALL PRODUCT TOTAL:']
-            filtered_rows = df[df['PRODUCT'].astype(str).str.upper().isin(targets)].copy()
-            
-            rows_list = []
-            for _, r in filtered_rows.iterrows():
-                p_label = str(r['PRODUCT']).replace('TOTAL:', '').strip().title()
-                label = "Total" if "All Product" in p_label else p_label
-                
-                tot = clean_numeric(r['TOTAL'])
-                sold = clean_numeric(r['TOTAL SOLD'])
-                bal = clean_numeric(r['BALANCE'])
-                
-                raw_val = clean_numeric(r[val_col]) if val_col else 0
-                val_bal = raw_val * 1000 if (val_col and "'000" in str(val_col)) else raw_val
-                
-                rows_list.append({
-                    ' ': label, 'Sold': sold/tot if tot > 0 else 0, 'Balance': bal/tot if tot > 0 else 0,
-                    'Balance unit': bal, 'Value of balance': val_bal
-                })
-                
-            pivot_t4_final = pd.DataFrame(rows_list)
-            st.dataframe(pivot_t4_final.style.format({
-                'Sold': '{:.2%}', 'Balance': '{:.2%}', 'Balance unit': '{:,.0f}', 'Value of balance': '$  {:,.2f}'
-            }), use_container_width=True)
-            pdf_report_payload['TLT-SUMMARY'] = pivot_t4_final
-
-        # ==========================================
-        # PDF EXPORT GENERATOR
-        # ==========================================
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📥 Export Data Summary")
+    elif page == "LST Inventory Analytics" and 'lst_tablet' in data_package:
+        st.header("LST Branch Inventory Matrix")
+        st.subheader("📱 Tablet Matrix Breakdowns")
+        st.dataframe(data_package['lst_tablet'], use_container_width=True)
+        st.subheader("🏺 Niche Lot Form Factor Breakdowns")
+        st.dataframe(data_package['lst_niche'], use_container_width=True)
         
-        def build_pdf_report(summary_dict):
-            buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=40, bottomMargin=40)
-            story = []
-            
-            styles = getSampleStyleSheet()
-            title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=22, leading=26, textColor=colors.HexColor('#1E3A8A'), spaceAfter=15)
-            h1_style = ParagraphStyle('Heading1Custom', parent=styles['Heading2'], fontSize=14, leading=18, textColor=colors.HexColor('#1F2937'), spaceBefore=12, spaceAfter=8)
-            
-            story.append(Paragraph("Consolidated Branch Inventory Executive Report", title_style))
-            story.append(Spacer(1, 10))
-            
-            for section_name, dataframe in summary_dict.items():
-                story.append(Paragraph(f"📝 Section: {section_name}", h1_style))
-                
-                formatted_df = dataframe.copy()
-                for col in formatted_df.columns:
-                    if col in ['Sold', 'Balance']:
-                        formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2%}")
-                    elif col == 'Balance unit':
-                        formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.0f}")
-                    elif col == 'Value of balance':
-                        formatted_df[col] = formatted_df[col].apply(lambda x: f"${x:,.2f}")
-                
-                raw_data = [formatted_df.columns.tolist()] + formatted_df.astype(str).values.tolist()
-                
-                table_object = Table(raw_data, hAlign='LEFT')
-                table_object.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F9FAFB')),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
-                ]))
-                story.append(KeepTogether([table_object]))
-                story.append(Spacer(1, 10))
-                
-            doc.build(story)
-            buffer.seek(0)
-            return buffer.getvalue()
-
-        if pdf_report_payload:
-            pdf_bytes = build_pdf_report(pdf_report_payload)
-            st.sidebar.download_button(
-                label="Download Verified Executive PDF",
-                data=pdf_bytes,
-                file_name="Inventory_Clean_Executive_Report.pdf",
-                mime="application/pdf"
-            )
-
-    except Exception as e:
-        st.error(f"Error parsing workbook contents safely: {str(e)}")
+    elif page == "TLT Inventory Analytics" and 'tlt_tablet' in data_package:
+        st.header("TLT Branch Inventory Performance")
+        st.subheader("📱 Tablet Overview Segment")
+        st.dataframe(data_package['tlt_tablet'], use_container_width=True)
+        st.subheader("🏺 Niche Form Factor Metrics")
+        st.dataframe(data_package['tlt_niche'], use_container_width=True)
 else:
-    st.info("⚠️ Please upload a valid branch inventory spreadsheet (.xlsx) to get started.")
+    # Fallback view when no sheet is provided yet
+    st.info("💡 Please upload an Excel document via the sidebar menu to instantly auto-populate the reporting dashboard dashboards.")
+    
+    # Optional: Display a visual structure preview template 
+    with st.expander("View Expected Sheet Structure Guidelines"):
+        st.markdown("""
+        The engine automatically maps data based on structural rules matching sheets named:
+        * `CCK-NICHE`
+        * `LST-TABLE & NICHE`
+        * `TLT-TABLE & NICHE`
+        """)
