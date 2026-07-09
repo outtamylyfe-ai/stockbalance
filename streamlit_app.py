@@ -321,5 +321,3 @@ if uploaded_file is not None:
         st.error(f"Error parsing workbook contents safely: {str(e)}")
 else:
     st.info("⚠️ Please upload a valid branch inventory spreadsheet (.xlsx) to get started.")
-else:
-    st.info("⚠️ Please upload a valid branch inventory spreadsheet (.xlsx) in the file area to execute system calculations.")
