@@ -47,12 +47,18 @@ def process_uploaded_excel(uploaded_file):
         out_df['Sold (%)'] = (out_df['Sold Units'] / out_df['Total Units']).map('{:.2%}'.format)
         out_df['Balance (%)'] = (out_df['Balance Units'] / out_df['Total Units']).map('{:.2%}'.format)
         
-        # String Formatter
+        # 🛠️ FIXED: Force column types to object/string so Pandas allows comma-formatted strings
+        out_df['Total Units'] = out_df['Total Units'].astype(object)
+        out_df['Sold Units'] = out_df['Sold Units'].astype(object)
+        out_df['Balance Units'] = out_df['Balance Units'].astype(object)
+        out_df['Value of Balance'] = out_df['Value of Balance'].astype(object)
+        
+        # Apply String Formatting
         for idx in out_df.index:
-            out_df.at[idx, 'Total Units'] = f"{int(out_df.at[idx, 'Total Units']):,}"
-            out_df.at[idx, 'Sold Units'] = f"{int(out_df.at[idx, 'Sold Units']):,}"
-            out_df.at[idx, 'Balance Units'] = f"{int(out_df.at[idx, 'Balance Units']):,}"
-            out_df.at[idx, 'Value of Balance'] = f"$ {out_df.at[idx, 'Value of Balance']:,.2f}"
+            out_df.at[idx, 'Total Units'] = f"{int(float(out_df.at[idx, 'Total Units'])):,}"
+            out_df.at[idx, 'Sold Units'] = f"{int(float(out_df.at[idx, 'Sold Units'])):,}"
+            out_df.at[idx, 'Balance Units'] = f"{int(float(out_df.at[idx, 'Balance Units'])):,}"
+            out_df.at[idx, 'Value of Balance'] = f"$ {float(out_df.at[idx, 'Value of Balance']):,.2f}"
             
         return out_df[['Total Units', 'Sold Units', 'Sold (%)', 'Balance Units', 'Balance (%)', 'Value of Balance']]
 
