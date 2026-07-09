@@ -13,26 +13,15 @@ st.title("📊 Branch Sales & Inventory Analytics")
 st.markdown("---")
 
 # ==========================================
-# 🛠️ DATA PROCESSING PIPELINE
+# 🛠️ EXACT CELL/ROW DATA PROCESSING PIPELINE
 # ==========================================
 @st.cache_data(ttl=3600)
 def process_uploaded_excel(uploaded_file):
     xls = pd.ExcelFile(uploaded_file)
     processed_data = {}
     
-    # --- HELPER UTILITIES ---
-    def clean_dataframe(df):
-        df.columns = df.columns.str.strip()
-        df['BALANCE_num'] = pd.to_numeric(df['BALANCE'], errors='coerce').fillna(0)
-        df['AVG_PO_num'] = pd.to_numeric(df['AVG PO PRICE'], errors='coerce').fillna(0)
-        df['TOTAL_num'] = pd.to_numeric(df['TOTAL'], errors='coerce').fillna(0)
-        df['SOLD_num'] = pd.to_numeric(df['TOTAL SOLD'], errors='coerce').fillna(0)
-        df['Calculated_Value'] = df['BALANCE_num'] * df['AVG_PO_num']
-        return df
-
+    # Generic format utility for matrices
     def format_summary_matrix(matrix_df):
-        """Converts raw rows of metrics into structural dashboard tables with proper totals/percentages."""
-        # Calculate Total Row dynamically
         total_row = pd.DataFrame([{
             'Category': 'Total',
             'Total Units': matrix_df['Total Units'].sum(),
@@ -42,18 +31,13 @@ def process_uploaded_excel(uploaded_file):
         }]).set_index('Category')
         
         out_df = pd.concat([matrix_df, total_row])
-        
-        # Add Percentage Columns safely
         out_df['Sold (%)'] = (out_df['Sold Units'] / out_df['Total Units']).map('{:.2%}'.format)
         out_df['Balance (%)'] = (out_df['Balance Units'] / out_df['Total Units']).map('{:.2%}'.format)
         
-        # 🛠️ FIXED: Force column types to object/string so Pandas allows comma-formatted strings
-        out_df['Total Units'] = out_df['Total Units'].astype(object)
-        out_df['Sold Units'] = out_df['Sold Units'].astype(object)
-        out_df['Balance Units'] = out_df['Balance Units'].astype(object)
-        out_df['Value of Balance'] = out_df['Value of Balance'].astype(object)
-        
-        # Apply String Formatting
+        # Enforce string parsing object casting for commas
+        for col in ['Total Units', 'Sold Units', 'Balance Units', 'Value of Balance']:
+            out_df[col] = out_df[col].astype(object)
+            
         for idx in out_df.index:
             out_df.at[idx, 'Total Units'] = f"{int(float(out_df.at[idx, 'Total Units'])):,}"
             out_df.at[idx, 'Sold Units'] = f"{int(float(out_df.at[idx, 'Sold Units'])):,}"
@@ -62,82 +46,121 @@ def process_uploaded_excel(uploaded_file):
             
         return out_df[['Total Units', 'Sold Units', 'Sold (%)', 'Balance Units', 'Balance (%)', 'Value of Balance']]
 
+    def extract_row_metrics(df, row_indices):
+        """Safely extracts columns and computes specific value metrics for selected rows."""
+        totals, solds, balances, values = 0, 0, 0, 0
+        for idx in row_indices:
+            if idx in df.index:
+                t = pd.to_numeric(df.at[idx, 'TOTAL'], errors='coerce') or 0
+                s = pd.to_numeric(df.at[idx, 'TOTAL SOLD'], errors='coerce') or 0
+                b = pd.to_numeric(df.at[idx, 'BALANCE'], errors='coerce') or 0
+                avg_p = pd.to_numeric(df.at[idx, 'AVG PO PRICE'], errors='coerce') or 0
+                
+                totals += t
+                solds += s
+                balances += b
+                values += (b * avg_p)
+        return totals, solds, balances, values
+
     # ==========================================
     # 1. CCK BRANCH PARSING
     # ==========================================
-    # A. CCK Pedestal / Tablet (Grouped by Blk A, B, C)
     if 'CCK-TABLET' in xls.sheet_names:
-        df_cck_tab = pd.read_excel(xls, sheet_name='CCK-TABLET', header=1)
-        df_cck_tab = clean_dataframe(df_cck_tab)
-        df_cck_tab['Block_Group'] = df_cck_tab['BLOCK'].ffill().str.strip()
+        # Load raw sheet without custom header tracking to lock 1-based index numbers matching Excel layout
+        df_cck_tab_raw = pd.read_excel(xls, sheet_name='CCK-TABLET', header=None)
         
-        # Clean rows
-        df_tab_clean = df_cck_tab[df_cck_tab['SUITE NO.'].notna() & (~df_cck_tab['BLOCK'].str.contains('TOTAL|TOTAL:', na=False, case=False))]
+        # Assign columns from Row index 1
+        cols = df_cck_tab_raw.iloc[1].str.strip().tolist()
+        df_cck_tab_raw.columns = cols
+        
+        # Row slices map directly to Excel row numbers translated to 0-based Python indices
+        blk_a_rows = list(range(2, 9))   # Excel rows 3 to 9 (includes all inner data components)
+        blk_b_rows = list(range(10, 14)) # Excel rows 11 to 14
+        blk_c_rows = list(range(15, 21)) # Excel rows 16 to 21
         
         tab_rows = []
-        for blk in ['A', 'B', 'C']:
-            sub = df_tab_clean[df_tab_clean['Block_Group'] == blk]
+        for blk_lbl, rows in [('Blk A', blk_a_rows), ('Blk B', blk_b_rows), ('Blk C', blk_c_rows)]:
+            t, s, b, v = extract_row_metrics(df_cck_tab_raw, rows)
             tab_rows.append({
-                'Category': f'Pedestal / Tablet (Blk {blk})',
-                'Total Units': sub['TOTAL_num'].sum(),
-                'Sold Units': sub['SOLD_num'].sum(),
-                'Balance Units': sub['BALANCE_num'].sum(),
-                'Value of Balance': sub['Calculated_Value'].sum()
+                'Category': f'Pedestal / Tablet ({blk_lbl})',
+                'Total Units': t, 'Sold Units': s, 'Balance Units': b, 'Value of Balance': v
             })
         processed_data['CCK_Pedestal'] = format_summary_matrix(pd.DataFrame(tab_rows).set_index('Category'))
 
-    # B. CCK Niche (Grouped by Single, Double, Buddha, Others)
     if 'CCK-NICHE' in xls.sheet_names:
         df_cck_niche = pd.read_excel(xls, sheet_name='CCK-NICHE', header=1)
-        df_cck_niche = clean_dataframe(df_cck_niche)
-        df_niche_clean = df_cck_niche[df_cck_niche['LOT TYPE'].notna() & (~df_cck_niche['BLOCK'].str.contains('TOTAL|TOTAL:', na=False, case=False))]
+        df_cck_niche.columns = df_cck_niche.columns.str.strip()
         
-        def categorize_cck_niche(row):
-            lot = str(row['LOT TYPE']).strip().upper()
-            if 'BUDDHA' in lot: return 'Niche - Buddha'
-            elif 'SINGLE' in lot or 'SG' in lot: return 'Niche - Single'
-            elif 'DOUBLE' in lot or 'DB' in lot: return 'Niche - Double'
+        # Drop summary footer/subtotal rows 
+        df_niche_clean = df_cck_niche[df_cck_niche['LOT TYPE'].notna() & (~df_cck_niche['BLOCK'].str.contains('TOTAL|TOTAL:', na=False, case=False))].copy()
+        
+        df_niche_clean['TOTAL_num'] = pd.to_numeric(df_niche_clean['TOTAL'], errors='coerce').fillna(0)
+        df_niche_clean['SOLD_num'] = pd.to_numeric(df_niche_clean['TOTAL SOLD'], errors='coerce').fillna(0)
+        df_niche_clean['BALANCE_num'] = pd.to_numeric(df_niche_clean['BALANCE'], errors='coerce').fillna(0)
+        df_niche_clean['AVG_PO_num'] = pd.to_numeric(df_niche_clean['AVG PO PRICE'], errors='coerce').fillna(0)
+        df_niche_clean['Value'] = df_niche_clean['BALANCE_num'] * df_niche_clean['AVG_PO_num']
+        
+        def classify_niche_type(val):
+            val = str(val).strip().upper()
+            if 'BUDDHA' in val: return 'Niche - Buddha'
+            elif 'SINGLE' in val or 'SG' in val: return 'Niche - Single'
+            elif 'DOUBLE' in val or 'DB' in val: return 'Niche - Double'
             else: return 'Niche - Others'
             
-        df_niche_clean = df_niche_clean.copy()
-        df_niche_clean['Custom_Cat'] = df_niche_clean.apply(categorize_cck_niche, axis=1)
-        
+        df_niche_clean['Custom_Cat'] = df_niche_clean['LOT TYPE'].apply(classify_niche_type)
         niche_aggs = df_niche_clean.groupby('Custom_Cat').agg(
             Total_Units=('TOTAL_num', 'sum'), Sold_Units=('SOLD_num', 'sum'),
-            Balance_Units=('BALANCE_num', 'sum'), Value_of_Balance=('Calculated_Value', 'sum')
+            Balance_Units=('BALANCE_num', 'sum'), Value_of_Balance=('Value', 'sum')
         ).rename(columns={'Total_Units': 'Total Units', 'Sold_Units': 'Sold Units', 'Balance_Units': 'Balance Units', 'Value_of_Balance': 'Value of Balance'})
         
-        # Ensure ordered layout output
         niche_aggs = niche_aggs.reindex(['Niche - Single', 'Niche - Double', 'Niche - Buddha', 'Niche - Others']).fillna(0)
         processed_data['CCK_Niche'] = format_summary_matrix(niche_aggs)
 
     # ==========================================
-    # 2. LST & TLT BRANCHES PARSING
+    # 2. LST & TLT BRANCHES PARSING (With Dynasty/Imperial isolation)
     # ==========================================
     for sheet_name, save_key in [('LST-TABLE & NICHE', 'LST'), ('TLT-TABLE & NICHE', 'TLT')]:
         if sheet_name in xls.sheet_names:
             df_branch = pd.read_excel(xls, sheet_name=sheet_name, header=1)
-            df_branch = clean_dataframe(df_branch)
+            df_branch.columns = df_branch.columns.str.strip()
             
-            def categorize_lst_tlt(row):
-                prod = str(row['PRODUCT']).strip().upper()
+            # Forward fill product context since rows under primary product header are left blank
+            df_branch['PRODUCT_filled'] = df_branch['PRODUCT'].ffill().str.strip().upper()
+            
+            df_branch['TOTAL_num'] = pd.to_numeric(df_branch['TOTAL'], errors='coerce').fillna(0)
+            df_branch['SOLD_num'] = pd.to_numeric(df_branch['TOTAL SOLD'], errors='coerce').fillna(0)
+            df_branch['BALANCE_num'] = pd.to_numeric(df_branch['BALANCE'], errors='coerce').fillna(0)
+            df_branch['AVG_PO_num'] = pd.to_numeric(df_branch['AVG PO PRICE'], errors='coerce').fillna(0)
+            df_branch['Value'] = df_branch['BALANCE_num'] * df_branch['AVG_PO_num']
+            
+            # Custom classification router tracking Suite names matching user requests
+            def classify_lst_tlt_rows(row):
+                prod = str(row['PRODUCT_filled']).upper()
+                suite = str(row['SUITE NO.']).strip().upper()
                 lot = str(row['LOT TYPE']).strip().upper()
+                
+                if 'TOTAL' in prod:
+                    return None
+                    
                 if 'TABLET' in prod:
-                    return 'Pedestal'
+                    if 'DYNASTY 2' in suite: return 'Pedestal - Dynasty 2'
+                    elif 'IMPERIAL 2' in suite: return 'Pedestal - Imperial 2'
+                    else: return 'Pedestal - Others'
                 elif 'NICHE' in prod:
                     if 'SINGLE' in lot or 'SG' in lot: return 'Niche - Single'
                     if 'DOUBLE' in lot or 'DB' in lot: return 'Niche - Double'
                 return None
                 
-            df_branch['Custom_Cat'] = df_branch.apply(categorize_lst_tlt, axis=1)
+            df_branch['Custom_Cat'] = df_branch.apply(classify_lst_tlt_rows, axis=1)
             df_branch_clean = df_branch[df_branch['Custom_Cat'].notna()]
             
             branch_aggs = df_branch_clean.groupby('Custom_Cat').agg(
                 Total_Units=('TOTAL_num', 'sum'), Sold_Units=('SOLD_num', 'sum'),
-                Balance_Units=('BALANCE_num', 'sum'), Value_of_Balance=('Calculated_Value', 'sum')
+                Balance_Units=('BALANCE_num', 'sum'), Value_of_Balance=('Value', 'sum')
             ).rename(columns={'Total_Units': 'Total Units', 'Sold_Units': 'Sold Units', 'Balance_Units': 'Balance Units', 'Value_of_Balance': 'Value of Balance'})
             
-            branch_aggs = branch_aggs.reindex(['Pedestal', 'Niche - Single', 'Niche - Double']).fillna(0)
+            expected_index = ['Pedestal - Dynasty 2', 'Pedestal - Imperial 2', 'Pedestal - Others', 'Niche - Single', 'Niche - Double']
+            branch_aggs = branch_aggs.reindex(expected_index).fillna(0)
             processed_data[save_key] = format_summary_matrix(branch_aggs)
             
     return processed_data
@@ -151,16 +174,16 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if uploaded_file is not None:
-    with st.spinner("Compiling structural views..."):
+    with st.spinner("Recompiling structural layout matrices..."):
         data_package = process_uploaded_excel(uploaded_file)
-    st.sidebar.success("🎉 Matrix Form Factor Parsed!")
+    st.sidebar.success("🎉 Custom Matrix Compiled Successfully!")
     
     branch_choice = st.sidebar.radio("Select Branch Dashboard:", ["CCK Branch", "LST Branch", "TLT Branch"])
     
     if branch_choice == "CCK Branch":
         st.header("🏢 CCK Branch Segment Analysis")
         if 'CCK_Pedestal' in data_package:
-            st.subheader("📦 Pedestal / Tablet Matrix")
+            st.subheader("📦 Pedestal / Tablet Matrix (by explicit Blocks)")
             st.dataframe(data_package['CCK_Pedestal'], use_container_width=True)
         if 'CCK_Niche' in data_package:
             st.subheader("🏺 Niche Classification Analysis")
@@ -174,4 +197,4 @@ if uploaded_file is not None:
         st.header("🏢 TLT Branch Matrix Analysis")
         st.dataframe(data_package['TLT'], use_container_width=True)
 else:
-    st.info("💡 Please upload an Excel document to populate the branch matrices.")
+    st.info("💡 Upload the tracking file to extract explicit cell block counts.")
